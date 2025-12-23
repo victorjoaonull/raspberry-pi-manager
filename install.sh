@@ -1,6 +1,3 @@
-
-### 2. **install.sh** (Atualizado e melhorado)
-```bash
 #!/bin/bash
 
 # =============================================
@@ -75,15 +72,38 @@ chown -R administrador:administrador "$INSTALL_DIR"
 
 # ========== CRIAR AMBIENTE VIRTUAL ==========
 echo -e "${BLUE}[6/12]${NC} Criando ambiente virtual Python..."
-sudo -u administrador python3 -m venv "$VENV_DIR"
+sudo -u administrador python3 -m venv "$VENV_DIR" --system-site-packages
 
 # ========== INSTALAR DEPENDÊNCIAS PYTHON ==========
 echo -e "${BLUE}[7/12]${NC} Instalando Python requirements..."
 sudo -u administrador "$VENV_DIR/bin/pip" install --upgrade pip
 sudo -u administrador "$VENV_DIR/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
 
+# ========== CRIAR SHELL SCRIPT WRAPPER ==========
+echo -e "${BLUE}[8/12]${NC} Criando script wrapper..."
+cat > "$INSTALL_DIR/run.sh" << 'EOF'
+#!/bin/bash
+set -e
+
+cd /home/administrador/pi-manager
+
+# Ativar ambiente virtual
+if [ -f "venv/bin/activate" ]; then
+    source venv/bin/activate
+else
+    echo "❌ Ambiente virtual não encontrado"
+    exit 1
+fi
+
+# Executar aplicação
+exec python app.py
+EOF
+
+chmod +x "$INSTALL_DIR/run.sh"
+chown administrador:administrador "$INSTALL_DIR/run.sh"
+
 # ========== CRIAR DIRETÓRIOS DE CONFIGURAÇÃO ==========
-echo -e "${BLUE}[8/12]${NC} Criando diretórios de configuração..."
+echo -e "${BLUE}[9/12]${NC} Criando diretórios de configuração..."
 mkdir -p "$INSTALL_DIR/config"
 mkdir -p "$INSTALL_DIR/static"
 chown administrador:administrador "$INSTALL_DIR/config"
@@ -101,7 +121,7 @@ EOF
 fi
 
 # ========== CONFIGURAR PERMISSÕES SUDO ==========
-echo -e "${BLUE}[9/12]${NC} Configurando permissões sudo..."
+echo -e "${BLUE}[10/12]${NC} Configurando permissões sudo..."
 cat > /etc/sudoers.d/pi-manager << 'EOF'
 administrador ALL=(ALL) NOPASSWD: /usr/bin/nmcli
 administrador ALL=(ALL) NOPASSWD: /usr/bin/chpasswd
@@ -120,37 +140,38 @@ EOF
 chmod 440 /etc/sudoers.d/pi-manager
 
 # ========== CONFIGURAR SERVIÇO SYSTEMD ==========
-echo -e "${BLUE}[10/12]${NC} Configurando serviço systemd..."
-cat > /etc/systemd/system/pi-manager.service << EOF
+echo -e "${BLUE}[11/12]${NC} Configurando serviço systemd..."
+cat > /etc/systemd/system/pi-manager.service << 'EOF'
 [Unit]
 Description=Gerenciador Web Raspberry PI
-After=graphical.target network-online.target
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=administrador
 Group=administrador
-WorkingDirectory=$INSTALL_DIR
-Environment="PATH=$VENV_DIR/bin"
-ExecStart=$VENV_DIR/bin/python $INSTALL_DIR/app.py
+WorkingDirectory=/home/administrador/pi-manager
+ExecStart=/bin/bash /home/administrador/pi-manager/run.sh
 Restart=always
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=pi-manager
-Environment=DISPLAY=:0
-Environment=XAUTHORITY=/home/administrador/.Xauthority
+
+# Ambiente completo
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
 
 [Install]
-WantedBy=graphical.target
+WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
 systemctl enable pi-manager.service
 
 # ========== CONFIGURAR AUTO-LOGIN ==========
-echo -e "${BLUE}[11/12]${NC} Configurando auto-login gráfico..."
+echo -e "${BLUE}[12/12]${NC} Configurando auto-login gráfico..."
 if [ -f /etc/lightdm/lightdm.conf ]; then
     sed -i 's/^#autologin-user=.*/autologin-user=administrador/' /etc/lightdm/lightdm.conf
     sed -i 's/^#autologin-user-timeout=.*/autologin-user-timeout=0/' /etc/lightdm/lightdm.conf
@@ -160,7 +181,7 @@ fi
 raspi-config nonint do_boot_behaviour B4
 
 # ========== CONFIGURAR CHROMIUM ==========
-echo -e "${BLUE}[12/12]${NC} Configurando Chromium..."
+echo -e "${BLUE}[13/12]${NC} Configurando Chromium..."
 # Criar diretório de perfil personalizado
 mkdir -p /home/administrador/chromium-profile
 chown -R administrador:administrador /home/administrador/chromium-profile
@@ -200,11 +221,20 @@ echo ""
 
 echo -e "${BLUE}🔄 Iniciando o serviço...${NC}"
 systemctl start pi-manager.service
-sleep 2
+sleep 3
 
 # Verificar se o serviço está rodando
 if systemctl is-active --quiet $SERVICE_NAME; then
     echo -e "${GREEN}✅ Serviço iniciado com sucesso!${NC}"
+    
+    # Testar se a API responde
+    echo -e "${BLUE}🧪 Testando API...${NC}"
+    sleep 2
+    if curl -s http://localhost:5000 > /dev/null; then
+        echo -e "${GREEN}✅ API respondendo corretamente!${NC}"
+    else
+        echo -e "${YELLOW}⚠️ API não respondeu. Verifique os logs.${NC}"
+    fi
 else
     echo -e "${RED}❌ Erro ao iniciar o serviço. Verifique os logs:${NC}"
     echo -e "${YELLOW}sudo journalctl -u $SERVICE_NAME -n 20${NC}"
@@ -219,3 +249,4 @@ if [[ $REPLY =~ ^[Ss]$ ]]; then
 else
     echo -e "${GREEN}✨ Instalação concluída! O sistema está pronto para uso.${NC}"
 fi
+
