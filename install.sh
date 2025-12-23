@@ -60,20 +60,7 @@ apt upgrade -y
 
 # ========== INSTALAR DEPENDÊNCIAS ==========
 echo -e "${BLUE}[3/12]${NC} Instalando dependências..."
-apt install -y \
-    python3-pip \
-    python3-venv \
-    python3-full \
-    nginx \
-    git \
-    chromium \
-    chromium-driver \
-    xdotool \
-    network-manager \
-    nmcli \
-    lightdm \
-    xserver-xorg \
-    --no-install-recommends
+apt install -y python3-pip python3-venv nginx git chromium python3-full xdotool network-manager --no-install-recommends
 
 # ========== CRIAR DIRETÓRIO DE INSTALAÇÃO ==========
 echo -e "${BLUE}[4/12]${NC} Criando diretório de instalação..."
