@@ -1,0 +1,6 @@
+# Exemplo de URLs para abrir automaticamente no Chromium
+# Formato: URL completa ou IP:porta
+http://localhost:5000
+https://www.google.com
+192.168.1.100:8080
+meuservidor.local:3000

@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rede - Gerenciador PI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .network-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        .connection-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem;
+            background: #f8f9fa;
+            border-radius: 8px;
+            margin-bottom: 0.5rem;
+            border-left: 4px solid #3498db;
+        }
+        .connection-active {
+            border-left-color: #2ecc71;
+        }
+        .connection-inactive {
+            border-left-color: #e74c3c;
+        }
+        .connection-actions {
+            display: flex;
+            gap: 0.5rem;
+        }
+        .wifi-strength {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: #7f8c8d;
+            font-size: 0.9rem;
+        }
+        .signal-bars {
+            display: flex;
+            gap: 1px;
+        }
+        .signal-bar {
+            width: 3px;
+            background: #bdc3c7;
+            border-radius: 1px;
+        }
+        .signal-bar.active {
+            background: #2ecc71;
+        }
+        .security-badge {
+            background: #f39c12;
+            color: white;
+            padding: 0.2rem 0.5rem;
+            border-radius: 10px;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+        .static-config {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 5px;
+            padding: 1rem;
+            margin-top: 1rem;
+        }
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+        .refresh-btn {
+            background: #27ae60;
+        }
+        .refresh-btn:hover {
+            background: #219653;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .tabs {
+            display: flex;
+            gap: 0;
+            margin-bottom: 1rem;
+            border-bottom: 2px solid #34495e;
+        }
+        .tab {
+            padding: 0.75rem 1.5rem;
+            background: #ecf0f1;
+            border: none;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+        .tab.active {
+            background: #34495e;
+            color: white;
+        }
+        .tab:hover:not(.active) {
+            background: #bdc3c7;
+        }
+        .loading-dots::after {
+            content: '...';
+            animation: dots 1.5s steps(4, end) infinite;
+        }
+        @keyframes dots {
+            0%, 20% { content: '.'; }
+            40% { content: '..'; }
+            60%, 100% { content: '...'; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🌐 Configuração de Rede</h1>
+        <a href="{{ url_for('index') }}" class="btn">Voltar</a>
+    </div>
+    <div class="nav">
+        <ul>
+            <li><a href="{{ url_for('index') }}">Dashboard</a></li>
+            <li><a href="{{ url_for('network') }}" class="active">Rede</a></li>
+            <li><a href="{{ url_for('system') }}">Sistema</a></li>
+            <li><a href="{{ url_for('autostart') }}">Autostart</a></li>
+            <li><a href="{{ url_for('logout') }}">Sair</a></li>
+        </ul>
+    </div>
+    <div class="main-content">
+        <!-- Status Atual da Rede -->
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h2>📊 Status da Rede</h2>
+                <button onclick="refreshAll()" class="btn refresh-btn">🔄 Atualizar Tudo</button>
+            </div>
+            <div id="network-status">
+                <p class="loading">Carregando status da rede<span class="loading-dots"></span></p>
+            </div>
+        </div>
+        <!-- Tabs para diferentes tipos de configuração -->
+        <div class="card">
+            <div class="tabs">
+                <button class="tab active" onclick="switchTab('ethernet')">🔌 Ethernet</button>
+                <button class="tab" onclick="switchTab('wifi')">📶 Wi-Fi</button>
+                <button class="tab" onclick="switchTab('connections')">⚙️ Conexões</button>
+            </div>
+            <!-- Tab Ethernet -->
+            <div id="ethernet-tab" class="tab-content active">
+                <h3>Configuração Ethernet</h3>
+                <form onsubmit="configureEthernet(event)">
+                    <div class="form-group">
+                        <label for="eth-name">Nome da Conexão:</label>
+                        <input type="text" id="eth-name" placeholder="Conexão Ethernet" value="ethernet-eth0">
+                    </div>
+                    <div class="form-group">
+                        <label for="eth-ip-type">Tipo de IP:</label>
+                        <select id="eth-ip-type" onchange="toggleStaticConfig('eth')">
+                            <option value="dhcp">DHCP (Automático)</option>
+                            <option value="static">IP Estático</option>
+                        </select>
+                    </div>
+                    
+                    <div id="eth-static-config" class="static-config" style="display: none;">
+                        <h4>Configuração IP Estático</h4>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="eth-ip">Endereço IP:</label>
+                                <input type="text" id="eth-ip" placeholder="ex: 192.168.1.100/24">
+                            </div>
+                            <div class="form-group">
+                                <label for="eth-gateway">Gateway:</label>
+                                <input type="text" id="eth-gateway" placeholder="ex: 192.168.1.1">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="eth-dns">Servidores DNS:</label>
+                            <input type="text" id="eth-dns" placeholder="ex: 8.8.8.8,8.8.4.4">
+                            <small>Separar múltiplos DNS com vírgula</small>
+                        </div>
+                    </div>
+                    
+                    <button type="submit" class="btn">💾 Configurar Ethernet</button>
+                </form>
+                <div id="eth-message" style="margin-top: 1rem;"></div>
+            </div>
+            <!-- Tab Wi-Fi -->
+            <div id="wifi-tab" class="tab-content">
+                <h3>Configuração Wi-Fi</h3>
+                <div class="form-group">
+                    <label>Redes Disponíveis:</label>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <select id="wifi-list" style="flex: 1;">
+                            <option value="">Clique em "Buscar Redes"</option>
+                        </select>
+                        <button type="button" onclick="scanWifi()" class="btn">📡 Buscar Redes</button>
+                    </div>
+                </div>
+                
+                <form onsubmit="connectWifi(event)">
+                    <div class="form-group">
+                        <label for="wifi-ssid">SSID (Nome da rede):</label>
+                        <input type="text" id="wifi-ssid" required placeholder="Nome da rede Wi-Fi">
+                    </div>
+                    <div class="form-group">
+                        <label for="wifi-password">Senha:</label>
+                        <input type="password" id="wifi-password" placeholder="Senha da rede Wi-Fi">
+                    </div>
+                    <div class="form-group">
+                        <label for="wifi-name">Nome da Conexão:</label>
+                        <input type="text" id="wifi-name" placeholder="Conexão Wi-Fi" value="wifi-connection">
+                    </div>
+                    <button type="submit" class="btn">📶 Conectar Wi-Fi</button>
+                </form>
+                <div id="wifi-message" style="margin-top: 1rem;"></div>
+            </div>
+            <!-- Tab Conexões -->
+            <div id="connections-tab" class="tab-content">
+                <h3>Gerenciar Conexões</h3>
+                <div id="connections-list">
+                    <p class="loading">Carregando conexões<span class="loading-dots"></span></p>
+                </div>
+            </div>
+        </div>
+        <!-- Informações de Ajuda -->
+        <div class="card">
+            <h2>💡 Informações</h2>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem;">
+                <div>
+                    <h4>🔌 Ethernet</h4>
+                    <ul style="padding-left: 1.5rem;">
+                        <li>Configure conexão cabeada</li>
+                        <li>DHCP para IP automático</li>
+                        <li>IP estático para configuração manual</li>
+                    </ul>
+                </div>
+                <div>
+                    <h4>📶 Wi-Fi</h4>
+                    <ul style="padding-left: 1.5rem;">
+                        <li>Busque redes disponíveis</li>
+                        <li>Conecte-se a redes Wi-Fi</li>
+                        <li>Suporte a WPA/WPA2</li>
+                    </ul>
+                </div>
+                <div>
+                    <h4>⚙️ Conexões</h4>
+                    <ul style="padding-left: 1.5rem;">
+                        <li>Visualize todas as conexões</li>
+                        <li>Ative/desative conexões</li>
+                        <li>Gerencie configurações</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        let currentTab = 'ethernet';
+        // Alternar entre tabs
+        function switchTab(tabName) {
+            // Esconder todas as tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Mostrar tab selecionada
+            document.getElementById(tabName + '-tab').classList.add('active');
+            document.querySelector(`.tab[onclick="switchTab('${tabName}')"]`).classList.add('active');
+            currentTab = tabName;
+            
+            // Carregar dados específicos da tab
+            if (tabName === 'connections') {
+                loadConnections();
+            } else if (tabName === 'wifi') {
+                scanWifi();
+            }
+        }
+        // Carregar status da rede
+        function loadNetworkStatus() {
+            fetch('/api/network/current')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        document.getElementById('network-status').innerHTML = 
+                            `<p class="error">Erro: ${data.error}</p>`;
+                        return;
+                    }
+                    let statusHTML = '<div class="status-grid">';
+                    
+                    // Conexões ativas
+                    if (data.connections && data.connections.length > 0) {
+                        statusHTML += '<h4>🔗 Conexões Ativas:</h4>';
+                        data.connections.forEach(conn => {
+                            const statusClass = conn.state === 'ativado' ? 'connection-active' : 'connection-inactive';
+                            statusHTML += `
+                                <div class="connection-item ${statusClass}">
+                                    <div>
+                                        <strong>${conn.name}</strong><br>
+                                        <small>${conn.device} • ${conn.type} • ${conn.state}</small>
+                                    </div>
+                                </div>
+                            `;
+                        });
+                    }
+                    // Endereços IP
+                    if (data.devices && data.devices.length > 0) {
+                        statusHTML += '<h4 style="margin-top: 1rem;">🌐 Endereços IP:</h4>';
+                        data.devices.forEach(dev => {
+                            if (dev.ip4) {
+                                statusHTML += `
+                                    <div class="status-item">
+                                        <strong>${dev.device}:</strong>
+                                        <span>${dev.ip4}</span>
+                                    </div>
+                                `;
+                            }
+                        });
+                    }
+                    if (!data.connections || data.connections.length === 0) {
+                        statusHTML += '<p>Nenhuma conexão de rede ativa</p>';
+                    }
+                    statusHTML += '</div>';
+                    document.getElementById('network-status').innerHTML = statusHTML;
+                })
+                .catch(error => {
+                    document.getElementById('network-status').innerHTML = 
+                        `<p class="error">Erro ao carregar status: ${error.message}</p>`;
+                });
+        }
+        // Buscar redes Wi-Fi
+        function scanWifi() {
+            const wifiList = document.getElementById('wifi-list');
+            wifiList.innerHTML = '<option value="">Buscando redes<span class="loading-dots"></span></option>';
+            
+            fetch('/api/network/wifi/list')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        wifiList.innerHTML = `<option value="">Erro: ${data.error}</option>`;
+                        return;
+                    }
+                    wifiList.innerHTML = '<option value="">Selecione uma rede</option>';
+                    
+                    if (data.networks && data.networks.length > 0) {
+                        data.networks.forEach(network => {
+                            const signalBars = getSignalBars(network.signal);
+                            const securityBadge = network.security && network.security !== '--' ? 
+                                `<span class="security-badge">${network.security}</span>` : '';
+                            
+                            wifiList.innerHTML += `
+                                <option value="${network.ssid}">
+                                    ${network.ssid} ${securityBadge} - ${signalBars} ${network.signal}%
+                                </option>
+                            `;
+                        });
+                    } else {
+                        wifiList.innerHTML = '<option value="">Nenhuma rede encontrada</option>';
+                    }
+                    // Preencher automaticamente ao selecionar
+                    wifiList.onchange = function() {
+                        if (this.value) {
+                            document.getElementById('wifi-ssid').value = this.value;
+                        }
+                    };
+                })
+                .catch(error => {
+                    wifiList.innerHTML = `<option value="">Erro: ${error.message}</option>`;
+                });
+        }
+        // Gerar barras de sinal
+        function getSignalBars(signal) {
+            const signalValue = parseInt(signal) || 0;
+            const bars = Math.min(4, Math.floor(signalValue / 25));
+            
+            let barsHTML = '<div class="wifi-strength"><div class="signal-bars">';
+            for (let i = 0; i < 4; i++) {
+                const height = (i + 1) * 5 + 5;
+                const isActive = i < bars;
+                barsHTML += `<div class="signal-bar ${isActive ? 'active' : ''}" style="height: ${height}px;"></div>`;
+            }
+            barsHTML += '</div></div>';
+            
+            return barsHTML;
+        }
+        // Configurar Ethernet
+        function configureEthernet(event) {
+            event.preventDefault();
+            
+            const config = {
+                type: 'ethernet',
+                name: document.getElementById('eth-name').value,
+                ip_type: document.getElementById('eth-ip-type').value
+            };
+            if (config.ip_type === 'static') {
+                config.type = 'static';
+                config.ip_address = document.getElementById('eth-ip').value;
+                config.gateway = document.getElementById('eth-gateway').value;
+                config.dns = document.getElementById('eth-dns').value;
+            }
+            fetch('/api/network/configure', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(config)
+            })
+            .then(response => response.json())
+            .then(data => {
+                const messageDiv = document.getElementById('eth-message');
+                if (data.success) {
+                    showMessage(messageDiv, data.message, 'success');
+                    loadNetworkStatus();
+                    loadConnections();
+                } else {
+                    showMessage(messageDiv, 'Erro: ' + data.error, 'error');
+                }
+            })
+            .catch(error => {
+                const messageDiv = document.getElementById('eth-message');
+                showMessage(messageDiv, 'Erro: ' + error, 'error');
+            });
+        }
+        // Conectar Wi-Fi
+        function connectWifi(event) {
+            event.preventDefault();
+            
+            const config = {
+                type: 'wifi',
+                ssid: document.getElementById('wifi-ssid').value,
+                password: document.getElementById('wifi-password').value,
+                name: document.getElementById('wifi-name').value || 'wifi-connection'
+            };
+            if (!config.ssid) {
+                const messageDiv = document.getElementById('wifi-message');
+                showMessage(messageDiv, 'Por favor, digite o SSID da rede', 'error');
+                return;
+            }
+            fetch('/api/network/configure', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(config)
+            })
+            .then(response => response.json())
+            .then(data => {
+                const messageDiv = document.getElementById('wifi-message');
+                if (data.success) {
+                    showMessage(messageDiv, data.message, 'success');
+                    document.getElementById('wifi-password').value = '';
+                    loadNetworkStatus();
+                    loadConnections();
+                } else {
+                    showMessage(messageDiv, 'Erro: ' + data.error, 'error');
+                }
+            })
+            .catch(error => {
+                const messageDiv = document.getElementById('wifi-message');
+                showMessage(messageDiv, 'Erro: ' + error, 'error');
+            });
+        }
+        // Carregar conexões
+        function loadConnections() {
+            fetch('/api/network/current')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        document.getElementById('connections-list').innerHTML = 
+                            `<p class="error">Erro: ${data.error}</p>`;
+                        return;
+                    }
+                    let connectionsHTML = '';
+                    
+                    if (data.connections && data.connections.length > 0) {
+                        connectionsHTML += '<div class="status-grid">';
+                        data.connections.forEach(conn => {
+                            const statusClass = conn.state === 'ativado' ? 'connection-active' : 'connection-inactive';
+                            const statusText = conn.state === 'ativado' ? 'Ativa' : 'Inativa';
+                            
+                            connectionsHTML += `
+                                <div class="connection-item ${statusClass}">
+                                    <div>
+                                        <strong>${conn.name}</strong><br>
+                                        <small>${conn.device} • ${conn.type} • ${statusText}</small>
+                                    </div>
+                                    <div class="connection-actions">
+                                        <button onclick="toggleConnection('${conn.name}', '${conn.state}')" class="btn">
+                                            ${conn.state === 'ativado' ? '⏸️' : '▶️'}
+                                        </button>
+                                        <button onclick="deleteConnection('${conn.name}')" class="btn btn-danger">🗑️</button>
+                                    </div>
+                                </div>
+                            `;
+                        });
+                        connectionsHTML += '</div>';
+                    } else {
+                        connectionsHTML = '<p>Nenhuma conexão configurada</p>';
+                    }
+                    
+                    document.getElementById('connections-list').innerHTML = connectionsHTML;
+                })
+                .catch(error => {
+                    document.getElementById('connections-list').innerHTML = 
+                        `<p class="error">Erro ao carregar conexões: ${error.message}</p>`;
+                });
+        }
+        // Alternar conexão (ativar/desativar)
+        function toggleConnection(connectionName, currentState) {
+            const action = currentState === 'ativado' ? 'down' : 'up';
+            
+            fetch('/api/network/configure', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    type: 'toggle',
+                    name: connectionName,
+                    action: action
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    loadNetworkStatus();
+                    loadConnections();
+                } else {
+                    alert('Erro: ' + data.error);
+                }
+            })
+            .catch(error => {
+                alert('Erro: ' + error);
+            });
+        }
+        // Deletar conexão
+        function deleteConnection(connectionName) {
+            if (confirm(`Tem certeza que deseja deletar a conexão "${connectionName}"?`)) {
+                // Implementar deleção de conexão
+                alert('Funcionalidade de deleção em desenvolvimento');
+            }
+        }
+        // Alternar configuração estática
+        function toggleStaticConfig(type) {
+            const element = document.getElementById(`${type}-static-config`);
+            const select = document.getElementById(`${type}-ip-type`);
+            element.style.display = select.value === 'static' ? 'block' : 'none';
+        }
+        // Atualizar tudo
+        function refreshAll() {
+            loadNetworkStatus();
+            if (currentTab === 'wifi') {
+                scanWifi();
+            }
+            if (currentTab === 'connections') {
+                loadConnections();
+            }
+        }
+        // Mostrar mensagem
+        function showMessage(element, message, type) {
+            element.className = type;
+            element.textContent = message;
+            element.style.display = 'block';
+            
+            setTimeout(() => {
+                element.style.display = 'none';
+            }, 5000);
+        }
+        // Carregar dados iniciais
+        document.addEventListener('DOMContentLoaded', function() {
+            loadNetworkStatus();
+            scanWifi();
+        });
+    </script>
+</body>
+</html>

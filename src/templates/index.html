@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gerenciador Raspberry PI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+        .metric-card {
+            background: white;
+            padding: 1rem;
+            border-radius: 8px;
+            border-left: 4px solid #2ecc71;
+            text-align: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .metric-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        .metric-label {
+            font-size: 0.9rem;
+            color: #7f8c8d;
+            margin-top: 0.5rem;
+        }
+        .temperature-hot {
+            color: #e74c3c;
+        }
+        .temperature-warm {
+            color: #f39c12;
+        }
+        .temperature-cool {
+            color: #3498db;
+        }
+        .quick-actions {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 0.5rem;
+        }
+        .status-card {
+            background: #f8f9fa;
+            padding: 1rem;
+            border-radius: 8px;
+            border-left: 4px solid #3498db;
+        }
+        .loading {
+            color: #7f8c8d;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🖥️ Gerenciador Raspberry PI</h1>
+        <div>
+            <span>Bem-vindo, administrador</span>
+            <a href="{{ url_for('logout') }}" class="btn" style="margin-left: 1rem;">Sair</a>
+        </div>
+    </div>
+    <div class="nav">
+        <ul>
+            <li><a href="{{ url_for('index') }}" class="active">Dashboard</a></li>
+            <li><a href="{{ url_for('network') }}">Rede</a></li>
+            <li><a href="{{ url_for('system') }}">Sistema</a></li>
+            <li><a href="{{ url_for('autostart') }}">Autostart</a></li>
+        </ul>
+    </div>
+    <div class="main-content">
+        <div class="dashboard-grid">
+            <!-- Status do Sistema -->
+            <div class="card">
+                <h2>📊 Status do Sistema</h2>
+                <div id="system-status">
+                    <p class="loading">Carregando informações do sistema...</p>
+                </div>
+                
+                <!-- Métricas do Sistema -->
+                <div class="metric-grid" id="system-metrics">
+                    <div class="metric-card">
+                        <div class="metric-value loading">...</div>
+                        <div class="metric-label">🌡️ Temperatura</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value loading">...</div>
+                        <div class="metric-label">⚡ CPU</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value loading">...</div>
+                        <div class="metric-label">💾 Memória</div>
+                    </div>
+                </div>
+            </div>
+            <!-- Ações Rápidas -->
+            <div class="card">
+                <h2>⚡ Ações Rápidas</h2>
+                <div class="quick-actions">
+                    <a href="{{ url_for('network') }}" class="btn">🌐 Configurar Rede</a>
+                    <a href="{{ url_for('system') }}" class="btn">🏷️ Alterar Hostname/Senha</a>
+                    <a href="{{ url_for('autostart') }}" class="btn">🚀 Configurar Autostart</a>
+                    <button onclick="restartBrowser()" class="btn">🔄 Reiniciar Browser</button>
+                    <button onclick="rebootSystem()" class="btn">🔁 Reiniciar Sistema</button>
+                    <button onclick="shutdownSystem()" class="btn btn-danger">⏻ Desligar Sistema</button>
+                </div>
+            </div>
+        </div>
+        <!-- Informações da Rede -->
+        <div class="card">
+            <h2>🌐 Status da Rede</h2>
+            <div id="network-status">
+                <p class="loading">Carregando status da rede...</p>
+            </div>
+            <button onclick="loadNetworkStatus()" class="btn">🔄 Atualizar Rede</button>
+        </div>
+        <!-- URLs do Autostart -->
+        <div class="card">
+            <h2>📋 URLs do Autostart</h2>
+            <div id="autostart-urls">
+                <p class="loading">Carregando URLs configuradas...</p>
+            </div>
+            <button onclick="loadAutostartUrls()" class="btn">🔄 Atualizar URLs</button>
+        </div>
+    </div>
+    <script>
+        // Carregar status do sistema
+        function loadSystemStatus() {
+            fetch('/api/system/info')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Erro na resposta da API');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.error) {
+                        document.getElementById('system-status').innerHTML = 
+                            `<p class="error">Erro: ${data.error}</p>`;
+                        return;
+                    }
+                    let statusHTML = `
+                        <div class="status-card">
+                            <div class="status-item">
+                                <strong>Hostname:</strong>
+                                <span>${data.hostname || 'N/A'}</span>
+                            </div>
+                            <div class="status-item">
+                                <strong>Modelo:</strong>
+                                <span>${data.model || 'N/A'}</span>
+                            </div>
+                            <div class="status-item">
+                                <strong>Uptime:</strong>
+                                <span>${data.uptime || 'N/A'}</span>
+                            </div>
+                        </div>
+                    `;
+                    
+                    document.getElementById('system-status').innerHTML = statusHTML;
+                    // Atualizar métricas
+                    let metricsHTML = '';
+                    
+                    // Temperatura com cor baseada no valor
+                    let tempClass = 'temperature-cool';
+                    if (data.temperature && data.temperature !== 'N/A') {
+                        const tempValue = parseFloat(data.temperature);
+                        if (tempValue > 70) tempClass = 'temperature-hot';
+                        else if (tempValue > 50) tempClass = 'temperature-warm';
+                    }
+                    
+                    metricsHTML += `
+                        <div class="metric-card">
+                            <div class="metric-value ${tempClass}">${data.temperature || 'N/A'}</div>
+                            <div class="metric-label">🌡️ Temperatura</div>
+                        </div>
+                    `;
+                    
+                    // Uso de CPU
+                    metricsHTML += `
+                        <div class="metric-card">
+                            <div class="metric-value">${data.cpu_usage || 'N/A'}</div>
+                            <div class="metric-label">⚡ CPU</div>
+                        </div>
+                    `;
+                    
+                    // Uso de Memória
+                    metricsHTML += `
+                        <div class="metric-card">
+                            <div class="metric-value">${data.memory_usage || 'N/A'}</div>
+                            <div class="metric-label">💾 Memória</div>
+                        </div>
+                    `;
+                    
+                    document.getElementById('system-metrics').innerHTML = metricsHTML;
+                })
+                .catch(error => {
+                    console.error('Erro:', error);
+                    document.getElementById('system-status').innerHTML = 
+                        `<p class="error">Erro ao carregar status: ${error.message}</p>`;
+                });
+        }
+        // Carregar status da rede
+        function loadNetworkStatus() {
+            fetch('/api/network/current')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        document.getElementById('network-status').innerHTML = 
+                            `<p class="error">Erro: ${data.error}</p>`;
+                        return;
+                    }
+                    let statusHTML = '<div class="status-grid">';
+                    
+                    // Conexões ativas
+                    if (data.connections && data.connections.length > 0) {
+                        data.connections.forEach(conn => {
+                            statusHTML += `
+                                <div class="status-item">
+                                    <strong>${conn.name}:</strong>
+                                    <span>${conn.device} - ${conn.state}</span>
+                                </div>
+                            `;
+                        });
+                    } else {
+                        statusHTML += `
+                            <div class="status-item">
+                                <strong>Status:</strong>
+                                <span>Nenhuma conexão ativa</span>
+                            </div>
+                        `;
+                    }
+                    // Endereços IP
+                    if (data.devices && data.devices.length > 0) {
+                        data.devices.forEach(dev => {
+                            if (dev.ip4) {
+                                statusHTML += `
+                                    <div class="status-item">
+                                        <strong>${dev.device} IP:</strong>
+                                        <span>${dev.ip4}</span>
+                                    </div>
+                                `;
+                            }
+                        });
+                    }
+                    statusHTML += '</div>';
+                    document.getElementById('network-status').innerHTML = statusHTML;
+                })
+                .catch(error => {
+                    document.getElementById('network-status').innerHTML = 
+                        `<p class="error">Erro ao carregar status da rede: ${error}</p>`;
+                });
+        }
+        // Carregar URLs do autostart
+        function loadAutostartUrls() {
+            fetch('/api/autostart/urls')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        document.getElementById('autostart-urls').innerHTML = 
+                            `<p class="error">Erro: ${data.error}</p>`;
+                        return;
+                    }
+                    let urlsHTML = '';
+                    
+                    if (data.urls && data.urls.length > 0) {
+                        urlsHTML += '<div class="status-grid">';
+                        data.urls.forEach((url, index) => {
+                            urlsHTML += `
+                                <div class="status-item">
+                                    <strong>URL ${index + 1}:</strong>
+                                    <span>${url}</span>
+                                </div>
+                            `;
+                        });
+                        urlsHTML += '</div>';
+                    } else {
+                        urlsHTML = '<p>Nenhuma URL configurada para autostart</p>';
+                    }
+                    
+                    document.getElementById('autostart-urls').innerHTML = urlsHTML;
+                })
+                .catch(error => {
+                    document.getElementById('autostart-urls').innerHTML = 
+                        `<p class="error">Erro ao carregar URLs: ${error}</p>`;
+                });
+        }
+        // Reiniciar browser
+        function restartBrowser() {
+            if (confirm('Reiniciar o browser com as URLs configuradas?')) {
+                fetch('/api/system/restart-browser', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert(data.message);
+                    } else {
+                        alert('Erro: ' + data.error);
+                    }
+                })
+                .catch(error => {
+                    alert('Erro: ' + error);
+                });
+            }
+        }
+        // Reiniciar sistema
+        function rebootSystem() {
+            if (confirm('Tem certeza que deseja reiniciar o sistema?')) {
+                fetch('/api/system/reboot', {method: 'POST'})
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            alert(data.message);
+                        } else {
+                            alert('Erro: ' + data.error);
+                        }
+                    })
+                    .catch(error => {
+                        alert('Erro: ' + error);
+                    });
+            }
+        }
+        // Desligar sistema
+        function shutdownSystem() {
+            if (confirm('Tem certeza que deseja desligar o sistema?')) {
+                fetch('/api/system/shutdown', {method: 'POST'})
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            alert(data.message);
+                        } else {
+                            alert('Erro: ' + data.error);
+                        }
+                    })
+                    .catch(error => {
+                        alert('Erro: ' + error);
+                    });
+            }
+        }
+        // Atualizar dados periodicamente
+        function startAutoRefresh() {
+            // Atualizar a cada 30 segundos
+            setInterval(() => {
+                loadSystemStatus();
+                loadNetworkStatus();
+            }, 30000);
+        }
+        // Carregar dados iniciais
+        document.addEventListener('DOMContentLoaded', function() {
+            loadSystemStatus();
+            loadNetworkStatus();
+            loadAutostartUrls();
+            startAutoRefresh();
+        });
+    </script>
+</body>
+</html>

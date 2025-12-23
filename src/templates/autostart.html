@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Autostart - Gerenciador PI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .url-item {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+            align-items: center;
+        }
+        .url-item input {
+            flex: 1;
+        }
+        .url-actions {
+            display: flex;
+            gap: 0.5rem;
+        }
+        .add-url-btn {
+            background: #27ae60;
+            margin-bottom: 1rem;
+        }
+        .add-url-btn:hover {
+            background: #219653;
+        }
+        .autostart-actions {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1rem;
+            flex-wrap: wrap;
+        }
+        .url-counter {
+            color: #7f8c8d;
+            font-size: 0.9rem;
+            margin-bottom: 1rem;
+        }
+        .auto-open-notice {
+            background: #e8f4fd;
+            border-left: 4px solid #3498db;
+            padding: 1rem;
+            border-radius: 5px;
+            margin-bottom: 1rem;
+        }
+        .url-examples {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-top: 1rem;
+        }
+        .example-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+        }
+        .example-item {
+            background: white;
+            padding: 0.5rem;
+            border-radius: 4px;
+            border-left: 3px solid #3498db;
+            font-family: monospace;
+            font-size: 0.85rem;
+        }
+        .drag-handle {
+            cursor: grab;
+            padding: 0.5rem;
+            color: #7f8c8d;
+            user-select: none;
+        }
+        .drag-handle:active {
+            cursor: grabbing;
+        }
+        .url-item.dragging {
+            opacity: 0.5;
+            background: #f8f9fa;
+        }
+        .test-btn {
+            background: #9b59b6;
+        }
+        .test-btn:hover {
+            background: #8e44ad;
+        }
+        .save-btn {
+            background: #27ae60;
+        }
+        .save-btn:hover {
+            background: #219653;
+        }
+        .url-preview {
+            background: #f8f9fa;
+            border: 1px solid #e1e8ed;
+            border-radius: 5px;
+            padding: 0.75rem;
+            margin-top: 0.5rem;
+            font-size: 0.9rem;
+        }
+        .url-preview a {
+            color: #3498db;
+            text-decoration: none;
+        }
+        .url-preview a:hover {
+            text-decoration: underline;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 2rem;
+            color: #7f8c8d;
+        }
+        .empty-state .icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🚀 Configuração de Autostart</h1>
+        <a href="{{ url_for('index') }}" class="btn">Voltar</a>
+    </div>
+    <div class="nav">
+        <ul>
+            <li><a href="{{ url_for('index') }}">Dashboard</a></li>
+            <li><a href="{{ url_for('network') }}">Rede</a></li>
+            <li><a href="{{ url_for('system') }}">Sistema</a></li>
+            <li><a href="{{ url_for('autostart') }}" class="active">Autostart</a></li>
+            <li><a href="{{ url_for('logout') }}">Sair</a></li>
+        </ul>
+    </div>
+    <div class="main-content">
+        <div class="card">
+            <div class="auto-open-notice">
+                <strong>⚠️ Atenção:</strong> O browser será aberto automaticamente quando o sistema iniciar com as URLs configuradas abaixo.
+            </div>
+            <h2>🌐 URLs para Abrir Automaticamente</h2>
+            <p class="url-counter" id="url-counter">Máximo: 10 URLs</p>
+            
+            <div id="urls-container">
+                <!-- URLs serão adicionadas aqui dinamicamente -->
+                <div class="empty-state" id="empty-state">
+                    <div class="icon">🌐</div>
+                    <h3>Nenhuma URL Configurada</h3>
+                    <p>Adicione URLs para abrir automaticamente quando o sistema iniciar.</p>
+                    <button onclick="addUrlField()" class="btn add-url-btn" style="margin-top: 1rem;">
+                        ➕ Adicionar Primeira URL
+                    </button>
+                </div>
+            </div>
+            <div class="autostart-actions">
+                <button type="button" class="btn" onclick="loadUrls()">📥 Carregar Configuração</button>
+                <button type="button" class="btn add-url-btn" onclick="addUrlField()">➕ Adicionar URL</button>
+                <button type="button" class="btn save-btn" onclick="saveUrls()">💾 Salvar Configuração</button>
+                <button type="button" class="btn" onclick="restartService()">🔄 Reiniciar Serviço</button>
+                <button type="button" class="btn test-btn" onclick="testUrls()">🧪 Testar URLs</button>
+            </div>
+            <div id="message" style="margin-top: 1rem;"></div>
+        </div>
+        <div class="card">
+            <h2>📋 Informações</h2>
+            <ul style="padding-left: 1.5rem; margin-bottom: 1rem;">
+                <li>As URLs serão abertas automaticamente quando o serviço iniciar</li>
+                <li>Máximo de 10 URLs permitidas</li>
+                <li><strong>Aceita:</strong> URLs completas (https://exemplo.com) ou apenas IPs (192.168.1.100:3000)</li>
+                <li>IPs sem protocolo serão automaticamente convertidos para http://</li>
+                <li>O Chromium será aberto em tela cheia automaticamente</li>
+                <li>Delay de 15 segundos para garantir que a rede esteja pronta</li>
+                <li>Certificados inválidos serão ignorados</li>
+                <li><strong>Após salvar, reinicie o serviço para aplicar as mudanças</strong></li>
+            </ul>
+            <div class="url-examples">
+                <h3>📝 Exemplos de URLs Válidas:</h3>
+                <div class="example-grid">
+                    <div class="example-item">https://google.com</div>
+                    <div class="example-item">http://192.168.1.100</div>
+                    <div class="example-item">10.1.1.162:9100</div>
+                    <div class="example-item">meuservidor.local:3000</div>
+                    <div class="example-item">localhost:8080</div>
+                    <div class="example-item">https://github.com</div>
+                </div>
+            </div>
+        </div>
+        <!-- Preview das URLs -->
+        <div class="card">
+            <h2>👀 Preview das URLs</h2>
+            <div id="url-preview">
+                <p class="loading">Nenhuma URL para visualizar. Adicione URLs acima.</p>
+            </div>
+        </div>
+    </div>
+    <script>
+        let maxUrls = 10;
+        let dragSrcEl = null;
+        // Adicionar campo de URL
+        function addUrlField() {
+            const container = document.getElementById('urls-container');
+            const emptyState = document.getElementById('empty-state');
+            const urlCount = container.getElementsByClassName('url-item').length;
+            
+            if (urlCount >= maxUrls) {
+                showMessage('Máximo de ' + maxUrls + ' URLs atingido', 'warning');
+                return;
+            }
+            
+            // Ocultar estado vazio
+            if (emptyState) {
+                emptyState.style.display = 'none';
+            }
+            
+            const urlItem = document.createElement('div');
+            urlItem.className = 'url-item';
+            urlItem.draggable = true;
+            urlItem.innerHTML = `
+                <div class="drag-handle" draggable="true">⠿</div>
+                <input type="text" class="url-input" placeholder="https://exemplo.com ou 192.168.1.100:3000" value="">
+                <div class="url-actions">
+                    <button type="button" class="btn" onclick="addUrlField()" title="Adicionar URL">+</button>
+                    <button type="button" class="btn btn-danger" onclick="removeUrlField(this)" title="Remover URL">-</button>
+                </div>
+            `;
+            
+            // Adicionar eventos de drag and drop
+            urlItem.addEventListener('dragstart', handleDragStart);
+            urlItem.addEventListener('dragover', handleDragOver);
+            urlItem.addEventListener('dragenter', handleDragEnter);
+            urlItem.addEventListener('dragleave', handleDragLeave);
+            urlItem.addEventListener('drop', handleDrop);
+            urlItem.addEventListener('dragend', handleDragEnd);
+            
+            // Adicionar evento de input para preview
+            const input = urlItem.querySelector('.url-input');
+            input.addEventListener('input', updateUrlPreview);
+            
+            container.appendChild(urlItem);
+            updateUrlCounter();
+            updateUrlPreview();
+            
+            // Focar no novo campo
+            input.focus();
+        }
+        // Remover campo de URL
+        function removeUrlField(button) {
+            const container = document.getElementById('urls-container');
+            const urlItems = container.getElementsByClassName('url-item');
+            
+            if (urlItems.length > 1) {
+                const urlItem = button.closest('.url-item');
+                urlItem.remove();
+                updateUrlCounter();
+                updateUrlPreview();
+            } else {
+                // Mostrar estado vazio se for a última URL
+                const emptyState = document.getElementById('empty-state');
+                if (emptyState) {
+                    emptyState.style.display = 'block';
+                    urlItems[0].remove();
+                }
+            }
+        }
+        // Atualizar contador
+        function updateUrlCounter() {
+            const container = document.getElementById('urls-container');
+            const urlCount = container.getElementsByClassName('url-item').length;
+            document.getElementById('url-counter').textContent = 
+                `${urlCount}/${maxUrls} URLs configuradas`;
+        }
+        // Carregar URLs salvas
+        function loadUrls() {
+            fetch('/api/autostart/urls')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        showMessage('Erro ao carregar URLs: ' + data.error, 'error');
+                        return;
+                    }
+                    const container = document.getElementById('urls-container');
+                    const emptyState = document.getElementById('empty-state');
+                    container.innerHTML = '';
+                    
+                    if (data.urls && data.urls.length > 0) {
+                        // Ocultar estado vazio
+                        if (emptyState) {
+                            emptyState.style.display = 'none';
+                        }
+                        
+                        data.urls.forEach(url => {
+                            addUrlFieldWithValue(url);
+                        });
+                    } else {
+                        // Mostrar estado vazio
+                        if (emptyState) {
+                            emptyState.style.display = 'block';
+                        } else {
+                            container.innerHTML = `
+                                <div class="empty-state" id="empty-state">
+                                    <div class="icon">🌐</div>
+                                    <h3>Nenhuma URL Configurada</h3>
+                                    <p>Adicione URLs para abrir automaticamente quando o sistema iniciar.</p>
+                                    <button onclick="addUrlField()" class="btn add-url-btn" style="margin-top: 1rem;">
+                                        ➕ Adicionar Primeira URL
+                                    </button>
+                                </div>
+                            `;
+                        }
+                    }
+                    
+                    showMessage('Configuração carregada com sucesso!', 'success');
+                    updateUrlCounter();
+                    updateUrlPreview();
+                })
+                .catch(error => {
+                    showMessage('Erro ao carregar URLs: ' + error, 'error');
+                });
+        }
+        // Adicionar campo com valor
+        function addUrlFieldWithValue(url) {
+            const container = document.getElementById('urls-container');
+            const urlCount = container.getElementsByClassName('url-item').length;
+            
+            if (urlCount >= maxUrls) {
+                return;
+            }
+            
+            const emptyState = document.getElementById('empty-state');
+            if (emptyState) {
+                emptyState.style.display = 'none';
+            }
+            
+            const urlItem = document.createElement('div');
+            urlItem.className = 'url-item';
+            urlItem.draggable = true;
+            urlItem.innerHTML = `
+                <div class="drag-handle" draggable="true">⠿</div>
+                <input type="text" class="url-input" placeholder="https://exemplo.com ou 192.168.1.100:3000" value="${url}">
+                <div class="url-actions">
+                    <button type="button" class="btn" onclick="addUrlField()" title="Adicionar URL">+</button>
+                    <button type="button" class="btn btn-danger" onclick="removeUrlField(this)" title="Remover URL">-</button>
+                </div>
+            `;
+            
+            // Adicionar eventos de drag and drop
+            urlItem.addEventListener('dragstart', handleDragStart);
+            urlItem.addEventListener('dragover', handleDragOver);
+            urlItem.addEventListener('dragenter', handleDragEnter);
+            urlItem.addEventListener('dragleave', handleDragLeave);
+            urlItem.addEventListener('drop', handleDrop);
+            urlItem.addEventListener('dragend', handleDragEnd);
+            
+            // Adicionar evento de input para preview
+            const input = urlItem.querySelector('.url-input');
+            input.addEventListener('input', updateUrlPreview);
+            
+            container.appendChild(urlItem);
+        }
+        // Salvar URLs
+        function saveUrls() {
+            const urlInputs = document.getElementsByClassName('url-input');
+            const urls = [];
+            
+            for (let input of urlInputs) {
+                if (input.value.trim()) {
+                    urls.push(input.value.trim());
+                }
+            }
+            
+            // Validar URLs
+            for (let url of urls) {
+                if (!isValidUrl(url)) {
+                    showMessage('URL inválida: ' + url, 'error');
+                    return;
+                }
+            }
+            
+            if (urls.length === 0) {
+                showMessage('Nenhuma URL para salvar', 'warning');
+                return;
+            }
+            
+            fetch('/api/autostart/urls', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({urls: urls})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showMessage('URLs salvas com sucesso! Reinicie o serviço para aplicar.', 'success');
+                } else {
+                    showMessage('Erro ao salvar URLs: ' + data.error, 'error');
+                }
+            })
+            .catch(error => {
+                showMessage('Erro ao salvar URLs: ' + error, 'error');
+            });
+        }
+        // Reiniciar serviço
+        function restartService() {
+            if (confirm('Isso irá reiniciar o serviço e abrir o Chromium com as URLs atuais. Continuar?')) {
+                showMessage('Reiniciando serviço e abrindo browser...', 'success');
+                
+                fetch('/api/system/restart-browser', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        showMessage(data.message, 'success');
+                    // Recarregar as URLs para garantir que estão atualizadas
+                        setTimeout(loadUrls, 2000);
+                    } else {
+                        showMessage('Erro: ' + data.error, 'error');
+                    }
+                })
+                .catch(error => {
+                    showMessage('Erro: ' + error, 'error');
+                });
+            }
+        }
+        // Testar URLs
+        function testUrls() {
+            const urlInputs = document.getElementsByClassName('url-input');
+            const urls = [];
+            
+            for (let input of urlInputs) {
+                if (input.value.trim()) {
+                    urls.push(input.value.trim());
+                }
+            }
+            
+            if (urls.length === 0) {
+                showMessage('Nenhuma URL para testar', 'warning');
+                return;
+            }
+            
+            showMessage('Abrindo ' + urls.length + ' URLs em novas abas...', 'success');
+            
+            // Abrir cada URL em uma nova aba
+            urls.forEach(url => {
+                let formattedUrl = url;
+                if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                    formattedUrl = 'http://' + url;
+                }
+                window.open(formattedUrl, '_blank');
+            });
+        }
+        // Atualizar preview das URLs
+        function updateUrlPreview() {
+            const urlInputs = document.getElementsByClassName('url-input');
+            const urls = [];
+            
+            for (let input of urlInputs) {
+                if (input.value.trim()) {
+                    urls.push(input.value.trim());
+                }
+            }
+            
+            const previewDiv = document.getElementById('url-preview');
+            
+            if (urls.length === 0) {
+                previewDiv.innerHTML = '<p class="loading">Nenhuma URL para visualizar. Adicione URLs acima.</p>';
+                return;
+            }
+            
+            let previewHTML = '<div style="display: flex; flex-direction: column; gap: 0.5rem;">';
+            
+            urls.forEach((url, index) => {
+                let formattedUrl = url;
+                if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                    formattedUrl = 'http://' + url;
+                }
+                
+                previewHTML += `
+                    <div class="url-preview">
+                        <strong>URL ${index + 1}:</strong><br>
+                        <a href="${formattedUrl}" target="_blank" title="Abrir em nova aba">
+                            ${formattedUrl}
+                        </a>
+                        <div style="margin-top: 0.25rem; font-size: 0.8rem; color: #7f8c8d;">
+                            ${isValidUrl(url) ? '✅ Válida' : '❌ Inválida'}
+                        </div>
+                    </div>
+                `;
+            });
+            
+            previewHTML += '</div>';
+            previewDiv.innerHTML = previewHTML;
+        }
+        // Validar URL
+        function isValidUrl(string) {
+            // URLs com protocolo
+            if (string.startsWith('http://') || string.startsWith('https://')) {
+                try {
+                    new URL(string);
+                    return true;
+                } catch (_) {
+                    return false;
+                }
+            }
+            
+            // IP com porta
+            const ipPortPattern = /^(\d{1,3}\.){3}\d{1,3}:\d+$/;
+            if (ipPortPattern.test(string)) {
+                const ipPart = string.split(':')[0];
+                const portPart = string.split(':')[1];
+                const ipValid = ipPart.split('.').every(part => {
+                    const num = parseInt(part);
+                    return num >= 0 && num <= 255;
+                });
+                const portValid = parseInt(portPart) >= 1 && parseInt(portPart) <= 65535;
+                return ipValid && portValid;
+            }
+            
+            // Apenas IP
+            const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
+            if (ipPattern.test(string)) {
+                return string.split('.').every(part => {
+                    const num = parseInt(part);
+                    return num >= 0 && num <= 255;
+                });
+            }
+            
+            // Hostname com porta
+            const hostnamePortPattern = /^[a-zA-Z0-9][a-zA-Z0-9.-]*:\d+$/;
+            if (hostnamePortPattern.test(string)) {
+                const portPart = string.split(':')[1];
+                return parseInt(portPart) >= 1 && parseInt(portPart) <= 65535;
+            }
+            
+            // Apenas hostname
+            const hostnamePattern = /^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$/;
+            if (hostnamePattern.test(string) || string === 'localhost') {
+                return true;
+            }
+            
+            return false;
+        }
+        // Drag and Drop functions
+        function handleDragStart(e) {
+            dragSrcEl = this;
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/html', this.innerHTML);
+            this.classList.add('dragging');
+        }
+        function handleDragOver(e) {
+            if (e.preventDefault) {
+                e.preventDefault();
+            }
+            e.dataTransfer.dropEffect = 'move';
+            return false;
+        }
+        function handleDragEnter(e) {
+            this.classList.add('over');
+        }
+        function handleDragLeave(e) {
+            this.classList.remove('over');
+        }
+        function handleDrop(e) {
+            if (e.stopPropagation) {
+                e.stopPropagation();
+            }
+            
+            if (dragSrcEl !== this) {
+                const container = document.getElementById('urls-container');
+                const urlItems = Array.from(container.getElementsByClassName('url-item'));
+                const fromIndex = urlItems.indexOf(dragSrcEl);
+                const toIndex = urlItems.indexOf(this);
+                
+                if (fromIndex < toIndex) {
+                    container.insertBefore(dragSrcEl, this.nextSibling);
+                } else {
+                    container.insertBefore(dragSrcEl, this);
+                }
+                
+                updateUrlPreview();
+            }
+            
+            return false;
+        }
+        function handleDragEnd(e) {
+            const items = document.querySelectorAll('.url-item');
+            items.forEach(item => {
+                item.classList.remove('over');
+                item.classList.remove('dragging');
+            });
+        }
+        // Mostrar mensagem
+        function showMessage(message, type) {
+            const messageDiv = document.getElementById('message');
+            messageDiv.className = type;
+            messageDiv.textContent = message;
+            messageDiv.style.display = 'block';
+            
+            setTimeout(() => {
+                messageDiv.style.display = 'none';
+            }, 5000);
+        }
+        // Inicializar
+        document.addEventListener('DOMContentLoaded', function() {
+            updateUrlCounter();
+            // Carregar URLs automaticamente ao abrir a página
+            loadUrls();
+        });
+    </script>
+</body>
+</html>

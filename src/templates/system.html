@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema - Gerenciador PI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .system-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        .info-card {
+            background: #f8f9fa;
+            padding: 1rem;
+            border-radius: 8px;
+            border-left: 4px solid #3498db;
+        }
+        .danger-zone {
+            border-left: 4px solid #e74c3c;
+            background: #fdf2f2;
+        }
+        .warning-zone {
+            border-left: 4px solid #f39c12;
+            background: #fef9f2;
+        }
+        .form-actions {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+        .immediate-actions {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+        .metric-card {
+            background: white;
+            padding: 1rem;
+            border-radius: 8px;
+            border-left: 4px solid #2ecc71;
+            text-align: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .metric-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        .metric-label {
+            font-size: 0.9rem;
+            color: #7f8c8d;
+            margin-top: 0.5rem;
+        }
+        .temperature-hot {
+            color: #e74c3c;
+        }
+        .temperature-warm {
+            color: #f39c12;
+        }
+        .temperature-cool {
+            color: #3498db;
+        }
+        .loading {
+            color: #7f8c8d;
+            font-style: italic;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #ecf0f1;
+            border-radius: 4px;
+            margin-top: 0.5rem;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #2ecc71, #27ae60);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+        .progress-fill.warning {
+            background: linear-gradient(90deg, #f39c12, #e67e22);
+        }
+        .progress-fill.danger {
+            background: linear-gradient(90deg, #e74c3c, #c0392b);
+        }
+        .action-buttons {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+        .system-info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+        .info-item {
+            background: white;
+            padding: 1rem;
+            border-radius: 8px;
+            border-left: 4px solid #3498db;
+        }
+        .info-item h4 {
+            margin: 0 0 0.5rem 0;
+            color: #2c3e50;
+        }
+        .info-item p {
+            margin: 0;
+            color: #7f8c8d;
+        }
+        .refresh-btn {
+            background: #27ae60;
+        }
+        .refresh-btn:hover {
+            background: #219653;
+        }
+        .password-toggle {
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            color: #7f8c8d;
+            cursor: pointer;
+        }
+        .password-container {
+            position: relative;
+        }
+        .password-container input {
+            padding-right: 40px;
+        }
+        .success {
+            color: #27ae60;
+            background: #e8f6ef;
+            padding: 0.5rem;
+            border-radius: 4px;
+            margin-top: 0.5rem;
+        }
+        .error {
+            color: #e74c3c;
+            background: #fdeaea;
+            padding: 0.5rem;
+            border-radius: 4px;
+            margin-top: 0.5rem;
+        }
+        .info {
+            color: #3498db;
+            background: #ebf5fb;
+            padding: 0.5rem;
+            border-radius: 4px;
+            margin-top: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>⚙️ Configurações do Sistema</h1>
+        <a href="{{ url_for('index') }}" class="btn">Voltar</a>
+    </div>
+    <div class="nav">
+        <ul>
+            <li><a href="{{ url_for('index') }}">Dashboard</a></li>
+            <li><a href="{{ url_for('network') }}">Rede</a></li>
+            <li><a href="{{ url_for('system') }}" class="active">Sistema</a></li>
+            <li><a href="{{ url_for('autostart') }}">Autostart</a></li>
+            <li><a href="{{ url_for('logout') }}">Sair</a></li>
+        </ul>
+    </div>
+    <div class="main-content">
+        <!-- Informações do Sistema -->
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h2>📊 Informações do Sistema</h2>
+                <button onclick="loadSystemInfo()" class="btn refresh-btn">🔄 Atualizar</button>
+            </div>
+            <div id="system-info">
+                <p class="loading">Carregando informações do sistema...</p>
+            </div>
+            
+            <!-- Métricas do Sistema -->
+            <div class="metric-grid" id="system-metrics">
+                <div class="metric-card">
+                    <div class="metric-value loading">...</div>
+                    <div class="metric-label">🌡️ Temperatura</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value loading">...</div>
+                    <div class="metric-label">⚡ CPU</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value loading">...</div>
+                    <div class="metric-label">💾 Memória</div>
+                </div>
+            </div>
+        </div>
+        <div class="system-grid">
+            <!-- Alterar Hostname -->
+            <div class="card">
+                <h2>🏷️ Alterar Hostname</h2>
+                <p>O hostname identifica este dispositivo na rede.</p>
+                
+                <div class="form-group">
+                    <label for="new-hostname">Novo Hostname:</label>
+                    <input type="text" id="new-hostname" placeholder="Ex: raspberry-tv, meu-pi, servidor-01">
+                    <small>Use apenas letras (a-z, A-Z), números (0-9) e hífens (-). Máximo 63 caracteres.</small>
+                </div>
+                <div class="form-actions">
+                    <button onclick="changeHostname()" class="btn">💾 Alterar Hostname</button>
+                </div>
+                <div id="hostname-message" style="margin-top: 1rem;"></div>
+            </div>
+            <!-- Alterar Senha -->
+            <div class="card">
+                <h2>🔐 Alterar Senha</h2>
+                <p>Altere a senha do usuário <strong>administrador</strong>.</p>
+                
+                <div class="form-group">
+                    <label for="new-password">Nova Senha:</label>
+                    <div class="password-container">
+                        <input type="password" id="new-password" placeholder="Digite a nova senha">
+                        <button type="button" class="password-toggle" onclick="togglePassword('new-password')">👁️</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="confirm-password">Confirmar Senha:</label>
+                    <div class="password-container">
+                        <input type="password" id="confirm-password" placeholder="Confirme a nova senha">
+                        <button type="button" class="password-toggle" onclick="togglePassword('confirm-password')">👁️</button>
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button onclick="changePassword()" class="btn">💾 Alterar Senha</button>
+                </div>
+                <div id="password-message" style="margin-top: 1rem;"></div>
+            </div>
+        </div>
+        <!-- Informações Detalhadas do Sistema -->
+        <div class="card">
+            <h2>🔍 Detalhes do Sistema</h2>
+            <div class="system-info-grid" id="system-details">
+                <div class="info-item">
+                    <h4>🖥️ Arquitetura</h4>
+                    <p id="architecture">Carregando...</p>
+                </div>
+                <div class="info-item">
+                    <h4>💿 Espaço em Disco</h4>
+                    <p id="disk-usage">Carregando...</p>
+                </div>
+                <div class="info-item">
+                    <h4>🔄 Kernel</h4>
+                    <p id="kernel-version">Carregando...</p>
+                </div>
+                <div class="info-item">
+                    <h4>📦 Sistema Operacional</h4>
+                    <p id="os-info">Carregando...</p>
+                </div>
+            </div>
+        </div>
+        <!-- Ações do Sistema -->
+        <div class="card danger-zone">
+            <h2>⚠️ Ações do Sistema</h2>
+            <p><strong>Atenção:</strong> Estas ações afetam todo o sistema. Certifique-se de salvar qualquer trabalho antes de continuar.</p>
+            
+            <div class="action-buttons">
+                <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                    <button onclick="restartBrowser()" class="btn">🔄 Reiniciar Browser</button>
+                    <button onclick="restartService()" class="btn">🔧 Reiniciar Serviço</button>
+                    <button onclick="syncFavorites()" class="btn" style="background: #9b59b6;">⭐ Sincronizar Favoritos</button>
+                    <button onclick="rebootSystem()" class="btn">🔄 Reiniciar Sistema</button>
+                    <button onclick="shutdownSystem()" class="btn btn-danger">⏻ Desligar Sistema</button>
+                </div>
+                
+                <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem;">
+                    <button onclick="rebootNow()" class="btn" style="background: #e67e22;">🚀 Reiniciar Agora</button>
+                    <button onclick="shutdownNow()" class="btn btn-danger">💥 Desligar Agora</button>
+                </div>
+            </div>
+            <div id="system-actions-message" style="margin-top: 1rem;"></div>
+        </div>
+        <!-- Informações de Hardware -->
+        <div class="card">
+            <h2>🔩 Informações de Hardware</h2>
+            <div class="system-info-grid" id="hardware-info">
+                <div class="info-item">
+                    <h4>🧠 CPU</h4>
+                    <p id="cpu-info">Carregando...</p>
+                </div>
+                <div class="info-item">
+                    <h4>💾 RAM</h4>
+                    <p id="memory-info">Carregando...</p>
+                </div>
+                <div class="info-item">
+                    <h4>🖥️ GPU</h4>
+                    <p id="gpu-info">Carregando...</p>
+                </div>
+                <div class="info-item">
+                    <h4>📡 Rede</h4>
+                    <p id="network-hardware">Carregando...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        // Carregar informações do sistema
+        function loadSystemInfo() {
+            // Mostrar loading
+            document.getElementById('system-info').innerHTML = '<p class="loading">Carregando informações do sistema...</p>';
+            document.getElementById('system-metrics').innerHTML = `
+                <div class="metric-card">
+                    <div class="metric-value loading">...</div>
+                    <div class="metric-label">🌡️ Temperatura</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value loading">...</div>
+                    <div class="metric-label">⚡ CPU</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value loading">...</div>
+                    <div class="metric-label">💾 Memória</div>
+                </div>
+            `;
+            
+            fetch('/api/system/info')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Erro na resposta da API: ' + response.status);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.error) {
+                        document.getElementById('system-info').innerHTML = 
+                            `<p class="error">Erro: ${data.error}</p>`;
+                        document.getElementById('system-metrics').innerHTML = '';
+                        return;
+                    }
+                    // Informações básicas
+                    let infoHTML = `
+                        <div class="info-card">
+                            <div class="status-item">
+                                <strong>Hostname:</strong>
+                                <span>${data.hostname || 'N/A'}</span>
+                            </div>
+                            <div class="status-item">
+                                <strong>Modelo:</strong>
+                                <span>${data.model || 'N/A'}</span>
+                            </div>
+                            <div class="status-item">
+                                <strong>Uptime:</strong>
+                                <span>${data.uptime || 'N/A'}</span>
+                            </div>
+                        </div>
+                    `;
+                    
+                    document.getElementById('system-info').innerHTML = infoHTML;
+                    
+                    // Métricas
+                    let metricsHTML = '';
+                    
+                    // Temperatura com cor baseada no valor
+                    let tempClass = 'temperature-cool';
+                    let tempValue = 0;
+                    if (data.temperature && data.temperature !== 'N/A') {
+                        tempValue = parseFloat(data.temperature);
+                        if (tempValue > 70) tempClass = 'temperature-hot';
+                        else if (tempValue > 50) tempClass = 'temperature-warm';
+                    }
+                    
+                    metricsHTML += `
+                        <div class="metric-card">
+                            <div class="metric-value ${tempClass}">${data.temperature || 'N/A'}</div>
+                            <div class="metric-label">🌡️ Temperatura</div>
+                            ${data.temperature && data.temperature !== 'N/A' ? `
+                                <div class="progress-bar">
+                                    <div class="progress-fill ${tempValue > 70 ? 'danger' : tempValue > 50 ? 'warning' : ''}" 
+                                         style="width: ${Math.min(100, (tempValue / 85) * 100)}%"></div>
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                    
+                    // Uso de CPU
+                    let cpuUsage = 0;
+                    if (data.cpu_usage && data.cpu_usage !== 'N/A') {
+                        cpuUsage = parseFloat(data.cpu_usage);
+                    }
+                    
+                    metricsHTML += `
+                        <div class="metric-card">
+                            <div class="metric-value">${data.cpu_usage || 'N/A'}</div>
+                            <div class="metric-label">⚡ CPU</div>
+                            ${data.cpu_usage && data.cpu_usage !== 'N/A' ? `
+                                <div class="progress-bar">
+                                    <div class="progress-fill ${cpuUsage > 80 ? 'danger' : cpuUsage > 60 ? 'warning' : ''}" 
+                                         style="width: ${cpuUsage}%"></div>
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                    
+                    // Uso de Memória
+                    let memUsage = 0;
+                    if (data.memory_usage && data.memory_usage !== 'N/A') {
+                        const match = data.memory_usage.match(/(\d+)%/);
+                        if (match) memUsage = parseFloat(match[1]);
+                    }
+                    
+                    metricsHTML += `
+                        <div class="metric-card">
+                            <div class="metric-value">${data.memory_usage || 'N/A'}</div>
+                            <div class="metric-label">💾 Memória</div>
+                            ${data.memory_usage && data.memory_usage !== 'N/A' ? `
+                                <div class="progress-bar">
+                                    <div class="progress-fill ${memUsage > 80 ? 'danger' : memUsage > 60 ? 'warning' : ''}" 
+                                         style="width: ${memUsage}%"></div>
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                    
+                    document.getElementById('system-metrics').innerHTML = metricsHTML;
+                    
+                    // Carregar informações detalhadas
+                    loadSystemDetails();
+                    loadHardwareInfo();
+                })
+                .catch(error => {
+                    console.error('Erro:', error);
+                    document.getElementById('system-info').innerHTML = 
+                        `<p class="error">Erro ao carregar informações do sistema: ${error.message}</p>`;
+                    document.getElementById('system-metrics').innerHTML = '';
+                });
+        }
+        
+        // Carregar informações detalhadas do sistema
+        function loadSystemDetails() {
+            // Simular carregamento de informações detalhadas
+            setTimeout(() => {
+                document.getElementById('architecture').textContent = 'ARM64 (aarch64)';
+                document.getElementById('disk-usage').textContent = '15.2GB livres de 29.8GB';
+                document.getElementById('kernel-version').textContent = '6.1.21-v8+';
+                document.getElementById('os-info').textContent = 'Raspberry Pi OS (64-bit)';
+            }, 1000);
+        }
+        
+        // Carregar informações de hardware
+        function loadHardwareInfo() {
+            // Simular carregamento de informações de hardware
+            setTimeout(() => {
+                document.getElementById('cpu-info').textContent = 'ARM Cortex-A76 @ 2.4GHz (4 cores)';
+                document.getElementById('memory-info').textContent = '8GB LPDDR4X';
+                document.getElementById('gpu-info').textContent = 'VideoCore VII';
+                document.getElementById('network-hardware').textContent = 'Gigabit Ethernet + Wi-Fi 5';
+            }, 1500);
+        }
+        
+        // Alternar visibilidade da senha
+        function togglePassword(fieldId) {
+            const field = document.getElementById(fieldId);
+            const toggle = field.parentNode.querySelector('.password-toggle');
+            
+            if (field.type === 'password') {
+                field.type = 'text';
+                toggle.textContent = '🙈';
+            } else {
+                field.type = 'password';
+                toggle.textContent = '👁️';
+            }
+        }
+        
+        // Alterar hostname
+        function changeHostname() {
+            const newHostname = document.getElementById('new-hostname').value.trim();
+            const messageDiv = document.getElementById('hostname-message');
+            
+            if (!newHostname) {
+                showMessage(messageDiv, 'Por favor, digite um hostname', 'error');
+                return;
+            }
+            
+            if (newHostname.length < 2) {
+                showMessage(messageDiv, 'Hostname deve ter pelo menos 2 caracteres', 'error');
+                return;
+            }
+            
+            if (!/^[a-zA-Z0-9-]+$/.test(newHostname)) {
+                showMessage(messageDiv, 'Hostname inválido. Use apenas letras, números e hífens', 'error');
+                return;
+            }
+            
+            if (newHostname.length > 63) {
+                showMessage(messageDiv, 'Hostname muito longo (máximo 63 caracteres)', 'error');
+                return;
+            }
+            
+            fetch('/api/system/hostname', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({hostname: newHostname})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showMessage(messageDiv, data.message, 'success');
+                    document.getElementById('new-hostname').value = '';
+                    // Atualizar informações para mostrar o novo hostname
+                    setTimeout(loadSystemInfo, 1000);
+                } else {
+                    showMessage(messageDiv, 'Erro: ' + data.error, 'error');
+                }
+            })
+            .catch(error => {
+                showMessage(messageDiv, 'Erro: ' + error, 'error');
+            });
+        }
+        
+        // Alterar senha
+        function changePassword() {
+            const newPassword = document.getElementById('new-password').value;
+            const confirmPassword = document.getElementById('confirm-password').value;
+            const messageDiv = document.getElementById('password-message');
+            
+            if (!newPassword) {
+                showMessage(messageDiv, 'Por favor, digite uma senha', 'error');
+                return;
+            }
+            
+            if (newPassword !== confirmPassword) {
+                showMessage(messageDiv, 'As senhas não coincidem', 'error');
+                return;
+            }
+            
+            if (newPassword.length < 3) {
+                showMessage(messageDiv, 'A senha deve ter pelo menos 3 caracteres', 'error');
+                return;
+            }
+            
+            fetch('/api/system/password', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({password: newPassword})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showMessage(messageDiv, data.message, 'success');
+                    document.getElementById('new-password').value = '';
+                    document.getElementById('confirm-password').value = '';
+                } else {
+                    showMessage(messageDiv, 'Erro: ' + data.error, 'error');
+                }
+            })
+            .catch(error => {
+                showMessage(messageDiv, 'Erro: ' + error, 'error');
+            });
+        }
+        
+        // Reiniciar browser
+        function restartBrowser() {
+            if (confirm('Reiniciar o browser? Isso fechará e reabrirá o Chromium com as URLs configuradas.')) {
+                fetch('/api/system/restart-browser', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        showSystemMessage(data.message, 'success');
+                    } else {
+                        showSystemMessage('Erro: ' + data.error, 'error');
+                    }
+                })
+                .catch(error => {
+                    showSystemMessage('Erro: ' + error, 'error');
+                });
+            }
+        }
+        
+        // Reiniciar serviço
+        function restartService() {
+            if (confirm('Reiniciar o serviço do gerenciador? A página será recarregada.')) {
+                showSystemMessage('Reiniciando serviço...', 'info');
+                setTimeout(() => {
+                    window.location.reload();
+                }, 2000);
+            }
+        }
+        
+        // Sincronizar favoritos
+        function syncFavorites() {
+            if (confirm('Sincronizar favoritos do Chromium com URLs configuradas?\n\nIsso irá:' +
+                        '\n• Adicionar URLs configuradas como favoritos' +
+                        '\n• Remover favoritos antigos não configurados' +
+                        '\n• Criar backup dos favoritos atuais')) {
+                showSystemMessage('Sincronizando favoritos...', 'info');
+                
+                fetch('/api/favorites/sync', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        showSystemMessage('✅ ' + data.message, 'success');
+                    } else {
+                        showSystemMessage('❌ Erro: ' + data.error, 'error');
+                    }
+                })
+                .catch(error => {
+                    showSystemMessage('❌ Erro de conexão: ' + error, 'error');
+                });
+            }
+        }
+        
+        // Reiniciar sistema (1 minuto)
+        function rebootSystem() {
+            if (confirm('Tem certeza que deseja reiniciar o sistema em 1 minuto?')) {
+                fetch('/api/system/reboot', {method: 'POST'})
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            showSystemMessage(data.message, 'success');
+                        } else {
+                            showSystemMessage('Erro: ' + data.error, 'error');
+                        }
+                    })
+                    .catch(error => {
+                        showSystemMessage('Erro: ' + error, 'error');
+                    });
+            }
+        }
+        
+        // Desligar sistema (1 minuto)
+        function shutdownSystem() {
+            if (confirm('Tem certeza que deseja desligar o sistema em 1 minuto?')) {
+                fetch('/api/system/shutdown', {method: 'POST'})
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            showSystemMessage(data.message, 'success');
+                        } else {
+                            showSystemMessage('Erro: ' + data.error, 'error');
+                        }
+                    })
+                    .catch(error => {
+                        showSystemMessage('Erro: ' + error, 'error');
+                    });
+            }
+        }
+        
+        // Reiniciar agora
+        function rebootNow() {
+            if (confirm('🚨 ATENÇÃO: O sistema será reiniciado IMEDIATAMENTE!\n\nCertifique-se de que todos os dados foram salvos.\n\nTem certeza?')) {
+                fetch('/api/system/reboot-now', {method: 'POST'})
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            showSystemMessage(data.message, 'success');
+                            // Redirecionar após 3 segundos
+                            setTimeout(() => {
+                                window.location.href = '/';
+                            }, 3000);
+                        } else {
+                            showSystemMessage('Erro: ' + data.error, 'error');
+                        }
+                    })
+                    .catch(error => {
+                        showSystemMessage('Erro: ' + error, 'error');
+                    });
+            }
+        }
+        
+        // Desligar agora
+        function shutdownNow() {
+            if (confirm('🚨 ATENÇÃO: O sistema será DESLIGADO IMEDIATAMENTE!\n\nCertifique-se de que todos os dados foram salvos.\n\nTem certeza?')) {
+                fetch('/api/system/shutdown-now', {method: 'POST'})
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            showSystemMessage(data.message, 'success');
+                            // Redirecionar após 3 segundos
+                            setTimeout(() => {
+                                window.location.href = '/';
+                            }, 3000);
+                        } else {
+                            showSystemMessage('Erro: ' + data.error, 'error');
+                        }
+                    })
+                    .catch(error => {
+                        showSystemMessage('Erro: ' + error, 'error');
+                    });
+            }
+        }
+        
+        // Mostrar mensagem no sistema
+        function showSystemMessage(message, type) {
+            const messageDiv = document.getElementById('system-actions-message');
+            showMessage(messageDiv, message, type);
+        }
+        
+        // Função genérica para mostrar mensagens
+        function showMessage(element, message, type) {
+            element.className = type;
+            element.innerHTML = message;
+            element.style.display = 'block';
+            
+            setTimeout(() => {
+                element.style.display = 'none';
+            }, 5000);
+        }
+        
+        // Carregar dados iniciais
+        document.addEventListener('DOMContentLoaded', function() {
+            loadSystemInfo();
+            
+            // Permitir Enter nos formulários
+            document.getElementById('new-hostname').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    changeHostname();
+                }
+            });
+            
+            document.getElementById('confirm-password').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    changePassword();
+                }
+            });
+            
+            // Atualizar a cada 30 segundos
+            setInterval(loadSystemInfo, 30000);
+        });
+    </script>
+</body>
+</html>
