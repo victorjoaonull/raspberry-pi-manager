@@ -73,6 +73,8 @@ INSTALL_DIR="/home/administrador/raspberry-pi-manager"
 VENV_DIR="$INSTALL_DIR/venv"
 SERVICE_NAME="raspberry-pi-manager"
 REPO_DIR="$(pwd)"
+GIT_REPO="${GIT_REPO:-https://github.com/victorjoaonull/raspberry-pi-manager.git}"
+WEBHOOK_SECRET="${WEBHOOK_SECRET:-}" # Use env var or leave empty; user should set in /etc/default/$SERVICE_NAME
 
 # ========== ATUALIZAR SISTEMA ==========
 echo -e "${BLUE}[2/12]${NC} Atualizando sistema..."
@@ -90,9 +92,18 @@ chown administrador:administrador "$INSTALL_DIR"
 
 # ========== COPIAR ARQUIVOS DO PROJETO ==========
 echo -e "${BLUE}[5/12]${NC} Copiando arquivos do projeto..."
-cp -r "$REPO_DIR/src/"* "$INSTALL_DIR/"
-if [ -f "$REPO_DIR/requirements.txt" ]; then
-    cp "$REPO_DIR/requirements.txt" "$INSTALL_DIR/"
+if [ "$CLONE_FROM_GITHUB" = "true" ]; then
+    echo "Clonando do repositório GitHub: $GIT_REPO"
+    sudo -u administrador git clone "$GIT_REPO" "$INSTALL_DIR"
+else
+    echo "Copiando arquivos do diretório local: $REPO_DIR"
+    cp -r "$REPO_DIR/src/"* "$INSTALL_DIR/"
+    if [ -f "$REPO_DIR/requirements.txt" ]; then
+        cp "$REPO_DIR/requirements.txt" "$INSTALL_DIR/"
+    fi
+    if [ -f "$REPO_DIR/update_app.sh" ]; then
+        cp "$REPO_DIR/update_app.sh" "$INSTALL_DIR/"
+    fi
 fi
 chown -R administrador:administrador "$INSTALL_DIR"
 
@@ -144,6 +155,22 @@ http://localhost:5000
 https://www.google.com
 EOF
     chown administrador:administrador "$INSTALL_DIR/config/autostart.conf"
+fi
+
+# ========== INSTALAR UPDATE_APP.SH ==========
+echo -e "${BLUE}[10.5/12]${NC} Instalando script de atualização..."
+if [ -f "$INSTALL_DIR/update_app.sh" ]; then
+    cp "$INSTALL_DIR/update_app.sh" /usr/local/bin/update_app.sh
+    chmod +x /usr/local/bin/update_app.sh
+    chown root:root /usr/local/bin/update_app.sh
+    echo "✅ update_app.sh instalado em /usr/local/bin/"
+elif [ -f "$REPO_DIR/update_app.sh" ]; then
+    cp "$REPO_DIR/update_app.sh" /usr/local/bin/update_app.sh
+    chmod +x /usr/local/bin/update_app.sh
+    chown root:root /usr/local/bin/update_app.sh
+    echo "✅ update_app.sh instalado em /usr/local/bin/"
+else
+    echo "⚠️  update_app.sh não encontrado; pulando."
 fi
 
 # ========== CONFIGURAR PERMISSÕES SUDO ==========
@@ -250,9 +277,35 @@ if ! visudo -cf /etc/sudoers.d/pi-manager >/dev/null 2>&1; then
     exit 1
 fi
 
+# ========== CRIAR ARQUIVO DE AMBIENTE PARA WEBHOOK ==========
+echo -e "${BLUE}[11/12]${NC} Criando arquivo de variáveis de ambiente..."
+ENV_FILE="/etc/default/${SERVICE_NAME}"
+if [ ! -f "$ENV_FILE" ]; then
+    cat > "$ENV_FILE" << 'ENVEOF'
+# Variáveis de ambiente para raspberry-pi-manager
+# Edite este arquivo e reinicie o serviço: sudo systemctl restart raspberry-pi-manager
+
+# Secret para validar webhooks do GitHub (OBRIGATÓRIO para auto-update)
+WEBHOOK_SECRET=
+
+# Nome do serviço systemd para reiniciar após atualização
+SERVICE_NAME=raspberry-pi-manager
+
+# Outras variáveis opcionais
+#DEBUG=false
+#FLASK_HOST=0.0.0.0
+#FLASK_PORT=5000
+ENVEOF
+    chown root:root "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+    echo "✅ Criado $ENV_FILE (configure WEBHOOK_SECRET nele)"
+else
+    echo "ℹ️  $ENV_FILE já existe; preservando."
+fi
+
 # ========== CONFIGURAR SERVIÇO SYSTEMD ==========
 [ -n "$SERVICE_NAME" ] || SERVICE_NAME="${SERVICE_NAME}"
-echo -e "${BLUE}[11/12]${NC} Configurando serviço systemd..."
+echo -e "${BLUE}[11.5/12]${NC} Configurando serviço systemd..."
 cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
 [Unit]
 Description=Gerenciador Web Raspberry PI
@@ -265,6 +318,7 @@ Type=simple
 User=administrador
 Group=administrador
 WorkingDirectory=$INSTALL_DIR
+EnvironmentFile=/etc/default/${SERVICE_NAME}
 ExecStart=$INSTALL_DIR/venv/bin/python $INSTALL_DIR/app.py
 Restart=always
 RestartSec=5
@@ -306,6 +360,16 @@ echo -e "${BLUE}[13/12]${NC} Configurando Chromium..."
 # Criar diretório de perfil personalizado
 mkdir -p /home/administrador/chromium-profile
 chown -R administrador:administrador /home/administrador/chromium-profile
+
+# Inicializar git no diretório se não for clone do GitHub
+if [ "$CLONE_FROM_GITHUB" != "true" ] && ! [ -d "$INSTALL_DIR/.git" ]; then
+    echo -e "${BLUE}📦 Inicializando repositório git local...${NC}"
+    cd "$INSTALL_DIR"
+    sudo -u administrador git init
+    sudo -u administrador git remote add origin "$GIT_REPO"
+    sudo -u administrador git branch -M main
+    echo "✅ Git inicializado; execute 'git pull origin main' para sincronizar com o GitHub"
+fi
 
 # Criar atalho .desktop "Chromium-Raspberry" no Desktop do usuário e em autostart
 echo -e "${BLUE}⚙️  Criando atalho Chromium-Raspberry...${NC}"
@@ -364,6 +428,8 @@ echo -e "  • Acesse http://$IP_ADDRESS:5000 para usar o gerenciador"
 echo -e "  • Configure as URLs em: $INSTALL_DIR/config/autostart.conf"
 echo -e "  • Usuário padrão: administrador / raspberry"
 echo -e "  • ALTERE A SENHA PADRÃO após o primeiro login!"
+echo -e "  • PARA AUTO-UPDATE: Edite $ENV_FILE e defina WEBHOOK_SECRET"
+echo -e "    Comando: sudo nano $ENV_FILE"
 echo ""
 
 echo -e "${BLUE}🔄 Iniciando o serviço...${NC}"
