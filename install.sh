@@ -69,15 +69,16 @@ else
 fi
 
 # ========== VARIÁVEIS DE CONFIGURAÇÃO ==========
-INSTALL_DIR="/home/administrador/raspberry-pi-manager"
+# Permite sobrescrever o diretório de instalação via variável de ambiente
+INSTALL_DIR="${INSTALL_DIR:-/home/administrador/raspberry-pi-manager}"
 VENV_DIR="$INSTALL_DIR/venv"
-SERVICE_NAME="raspberry-pi-manager"
-# Use the script's directory as the repository directory (handles being
-# invoked from another cwd). Works in bash and when sourced via absolute
-# or relative path.
+SERVICE_NAME="${SERVICE_NAME:-raspberry-pi-manager}"
+# Diretório do repositório (onde o script está localizado)
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GIT_REPO="${GIT_REPO:-https://github.com/victorjoaonull/raspberry-pi-manager.git}"
-WEBHOOK_SECRET="${WEBHOOK_SECRET:-}" # Use env var or leave empty; user should set in /etc/default/$SERVICE_NAME
+# Se desejar clonar do GitHub, exporte CLONE_FROM_GITHUB=true antes de rodar
+CLONE_FROM_GITHUB="${CLONE_FROM_GITHUB:-false}"
+WEBHOOK_SECRET="${WEBHOOK_SECRET:-}"
 
 # ========== ATUALIZAR SISTEMA ==========
 echo -e "${BLUE}[2/12]${NC} Atualizando sistema..."
@@ -101,31 +102,39 @@ if [ "$CLONE_FROM_GITHUB" = "true" ]; then
 else
     echo "Copiando arquivos do diretório local: $REPO_DIR"
     # Suporta projetos que colocam os arquivos diretamente no repositório
-    # ou dentro de um subdiretório `src/`.
+    # ou dentro de um subdiretório `src`.
     if [ -d "$REPO_DIR/src" ]; then
         SRC_DIR="$REPO_DIR/src"
     else
         SRC_DIR="$REPO_DIR"
     fi
     echo "  Fonte: $SRC_DIR"
-    # Use rsync se disponível (mais robusto), fallback para cp com nullglob
-    if command -v rsync >/dev/null 2>&1; then
-        sudo -u administrador rsync -a --exclude='.git' "$SRC_DIR/" "$INSTALL_DIR/"
-    else
-        # Evita erro com globs que não casam (set -e presente)
-        shopt -s nullglob
-        FILES=( "$SRC_DIR/"* )
-        if [ ${#FILES[@]} -gt 0 ]; then
-            sudo -u administrador cp -r "${FILES[@]}" "$INSTALL_DIR/"
-        fi
-        shopt -u nullglob
-    fi
 
-    # Copy possible auxiliary files: prefer repository root, fallback to SRC_DIR
-    if [ -f "$REPO_DIR/requirements.txt" ]; then
-        cp "$REPO_DIR/requirements.txt" "$INSTALL_DIR/"
-    elif [ -f "$SRC_DIR/requirements.txt" ]; then
-        cp "$SRC_DIR/requirements.txt" "$INSTALL_DIR/"
+    # Se a fonte for o mesmo caminho do destino (ex.: o usuário executou o
+    # instalador de dentro do próprio diretório alvo), NÃO copie para evitar
+    # criar cópias recursivas dentro de si mesmo.
+    if [ "$(realpath "$SRC_DIR")" = "$(realpath "$INSTALL_DIR")" ]; then
+        echo -e "${YELLOW}⚠️  Fonte e destino são o mesmo diretório; pulando cópia de arquivos.${NC}"
+    else
+        # Use rsync se disponível (mais robusto), fallback para cp com nullglob
+        if command -v rsync >/dev/null 2>&1; then
+            sudo -u administrador rsync -a --exclude='.git' "$SRC_DIR/" "$INSTALL_DIR/"
+        else
+            # Evita erro com globs que não casam (set -e presente)
+            shopt -s nullglob
+            FILES=( "$SRC_DIR/"* )
+            if [ ${#FILES[@]} -gt 0 ]; then
+                sudo -u administrador cp -r "${FILES[@]}" "$INSTALL_DIR/"
+            fi
+            shopt -u nullglob
+        fi
+
+        # Copy possible auxiliary files: prefer repository root, fallback to SRC_DIR
+        if [ -f "$REPO_DIR/requirements.txt" ]; then
+            cp "$REPO_DIR/requirements.txt" "$INSTALL_DIR/"
+        elif [ -f "$SRC_DIR/requirements.txt" ]; then
+            cp "$SRC_DIR/requirements.txt" "$INSTALL_DIR/"
+        fi
     fi
 
     if [ -f "$REPO_DIR/update_app.sh" ]; then
@@ -143,7 +152,11 @@ sudo -u administrador python3 -m venv "$VENV_DIR" --system-site-packages
 # ========== INSTALAR DEPENDÊNCIAS PYTHON ==========
 echo -e "${BLUE}[7/12]${NC} Instalando Python requirements..."
 sudo -u administrador "$VENV_DIR/bin/pip" install --upgrade pip
-sudo -u administrador "$VENV_DIR/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
+if [ -f "$INSTALL_DIR/requirements.txt" ]; then
+    sudo -u administrador "$VENV_DIR/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
+else
+    echo -e "${YELLOW}⚠️  requirements.txt não encontrado em $INSTALL_DIR; pulando instalação de dependências Python.${NC}"
+fi
 
 # ========== CRIAR SHELL SCRIPT WRAPPER ==========
 echo -e "${BLUE}[8/12]${NC} Criando script wrapper..."
