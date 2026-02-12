@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and runtime files
+*.log
+update_app.log
+
+# Editor directories
+.vscode/
+.idea/
+
+# Secrets
+*.pem
+*.key
+cookiejar
+
+# Systemd and install artifacts (optional to ignore)
+*.service
+
+# node
+node_modules/
+
+# Ignore installed packages
+dist/
+build/
+

@@ -6,103 +6,316 @@
     <title>Rede - Gerenciador PI</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <style>
-        .network-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-            gap: 1.5rem;
-            margin-bottom: 2rem;
+        .connection-card {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 1rem;
+            border-left: 4px solid #3498db;
+            transition: all 0.3s ease;
         }
-        .connection-item {
+        .connection-card:hover {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            transform: translateY(-2px);
+        }
+        .connection-card.active {
+            border-left-color: #2ecc71;
+            background: #f0fdf4;
+        }
+        .connection-card.inactive {
+            border-left-color: #e74c3c;
+            opacity: 0.8;
+        }
+        .connection-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 0.75rem;
-            background: #f8f9fa;
-            border-radius: 8px;
-            margin-bottom: 0.5rem;
-            border-left: 4px solid #3498db;
+            margin-bottom: 0.75rem;
         }
-        .connection-active {
-            border-left-color: #2ecc71;
+        .connection-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #2c3e50;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
         }
-        .connection-inactive {
-            border-left-color: #e74c3c;
+        .connection-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: bold;
+        }
+        .badge-active {
+            background: #d4edda;
+            color: #155724;
+        }
+        .badge-inactive {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .badge-type {
+            background: #cfe2ff;
+            color: #084298;
+        }
+        .connection-details {
+            font-size: 0.9rem;
+            color: #555;
+            line-height: 1.6;
+            margin-bottom: 0.75rem;
+        }
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .detail-label {
+            font-weight: 500;
+            color: #666;
+        }
+        .detail-value {
+            color: #333;
+            font-family: monospace;
+            flex: 1;
+            text-align: right;
+            word-break: break-all;
+        }
+        .copy-btn {
+            background: none;
+            border: none;
+            color: #3498db;
+            cursor: pointer;
+            padding: 0 0.25rem;
+            font-size: 0.9rem;
+            margin-left: 0.5rem;
+        }
+        .copy-btn:hover {
+            color: #2980b9;
         }
         .connection-actions {
             display: flex;
             gap: 0.5rem;
+            margin-top: 0.75rem;
         }
-        .wifi-strength {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            color: #7f8c8d;
-            font-size: 0.9rem;
-        }
-        .signal-bars {
-            display: flex;
-            gap: 1px;
-        }
-        .signal-bar {
-            width: 3px;
-            background: #bdc3c7;
-            border-radius: 1px;
-        }
-        .signal-bar.active {
-            background: #2ecc71;
-        }
-        .security-badge {
-            background: #f39c12;
-            color: white;
-            padding: 0.2rem 0.5rem;
-            border-radius: 10px;
-            font-size: 0.8rem;
-            font-weight: bold;
-        }
-        .static-config {
-            background: #fff3cd;
-            border: 1px solid #ffeaa7;
-            border-radius: 5px;
-            padding: 1rem;
-            margin-top: 1rem;
-        }
-        .form-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 1rem;
-        }
-        .refresh-btn {
-            background: #27ae60;
-        }
-        .refresh-btn:hover {
-            background: #219653;
-        }
-        .tab-content {
-            display: none;
-        }
-        .tab-content.active {
-            display: block;
-        }
-        .tabs {
-            display: flex;
-            gap: 0;
-            margin-bottom: 1rem;
-            border-bottom: 2px solid #34495e;
-        }
-        .tab {
-            padding: 0.75rem 1.5rem;
-            background: #ecf0f1;
+        .action-btn {
+            flex: 1;
+            padding: 0.5rem;
             border: none;
+            border-radius: 5px;
+            font-size: 0.85rem;
             cursor: pointer;
             font-weight: 500;
-            transition: all 0.3s;
+            transition: all 0.2s;
         }
-        .tab.active {
-            background: #34495e;
+        .action-btn.edit {
+            background: #3498db;
             color: white;
         }
-        .tab:hover:not(.active) {
+        .action-btn.edit:hover {
+            background: #2980b9;
+        }
+        .action-btn.toggle {
+            background: #27ae60;
+            color: white;
+        }
+        .action-btn.toggle:hover {
+            background: #229954;
+        }
+        .action-btn.delete {
+            background: #e74c3c;
+            color: white;
+        }
+        .action-btn.delete:hover {
+            background: #c0392b;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+            animation: fadeIn 0.3s ease;
+        }
+        .modal.active {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        @keyframes slideIn {
+            from {
+                transform: translateY(-50px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+        .modal-content {
+            background: white;
+            padding: 2rem;
+            border-radius: 10px;
+            max-width: 500px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+            animation: slideIn 0.3s ease;
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 2px solid #ecf0f1;
+        }
+        .modal-title {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: #7f8c8d;
+        }
+        .modal-close:hover {
+            color: #2c3e50;
+        }
+        .form-group {
+            margin-bottom: 1rem;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+            color: #2c3e50;
+        }
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #bdc3c7;
+            border-radius: 5px;
+            font-size: 0.95rem;
+            font-family: inherit;
+        }
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: #3498db;
+            box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.1);
+        }
+        .form-group input:disabled,
+        .form-group select:disabled {
+            background: #ecf0f1;
+            cursor: not-allowed;
+            color: #95a5a6;
+        }
+        .form-group small {
+            display: block;
+            margin-top: 0.25rem;
+            color: #7f8c8d;
+            font-size: 0.85rem;
+        }
+        .config-section {
+            background: #f8f9fa;
+            padding: 1rem;
+            border-radius: 5px;
+            margin-bottom: 1rem;
+            border: 1px solid #ecf0f1;
+        }
+        .config-section.disabled {
+            background: #ecf0f1;
+            opacity: 0.7;
+        }
+        .config-section h4 {
+            margin: 0 0 1rem 0;
+            color: #2c3e50;
+            font-size: 0.95rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .config-section.disabled h4 {
+            color: #95a5a6;
+        }
+        .ip-type-buttons {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        .ip-type-btn {
+            padding: 0.75rem;
+            border: 2px solid #bdc3c7;
+            background: white;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .ip-type-btn.active {
+            background: #3498db;
+            color: white;
+            border-color: #3498db;
+        }
+        .ip-type-btn:hover {
+            border-color: #3498db;
+        }
+        .modal-actions {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.75rem;
+            margin-top: 2rem;
+            padding-top: 1rem;
+            border-top: 2px solid #ecf0f1;
+        }
+        .modal-actions button {
+            padding: 0.75rem;
+            border: none;
+            border-radius: 5px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .modal-save {
+            background: #27ae60;
+            color: white;
+        }
+        .modal-save:hover {
+            background: #229954;
+        }
+        .modal-cancel {
+            background: #ecf0f1;
+            color: #2c3e50;
+        }
+        .modal-cancel:hover {
             background: #bdc3c7;
+        }
+        .modal-delete {
+            background: #e74c3c;
+            color: white;
+            grid-column: 1 / -1;
+        }
+        .modal-delete:hover {
+            background: #c0392b;
+        }
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: #7f8c8d;
         }
         .loading-dots::after {
             content: '...';
@@ -113,11 +326,37 @@
             40% { content: '..'; }
             60%, 100% { content: '...'; }
         }
+        .success-message {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+            padding: 1rem;
+            border-radius: 5px;
+            margin-bottom: 1rem;
+            animation: slideIn 0.3s ease;
+        }
+        .error-message {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+            padding: 1rem;
+            border-radius: 5px;
+            margin-bottom: 1rem;
+            animation: slideIn 0.3s ease;
+        }
+        .connections-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 1rem;
+        }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>🌐 Configuração de Rede</h1>
+        <div class="site-brand">
+            <img src="{{ url_for('static', filename='imgs/logo.png') }}" alt="Logo" class="logo-img">
+            <h1 class="brand-title">Configuração de Rede</h1>
+        </div>
         <a href="{{ url_for('index') }}" class="btn">Voltar</a>
     </div>
     <div class="nav">
@@ -126,385 +365,568 @@
             <li><a href="{{ url_for('network') }}" class="active">Rede</a></li>
             <li><a href="{{ url_for('system') }}">Sistema</a></li>
             <li><a href="{{ url_for('autostart') }}">Autostart</a></li>
+            <li><a href="{{ url_for('about') }}">Sobre</a></li>
             <li><a href="{{ url_for('logout') }}">Sair</a></li>
         </ul>
     </div>
     <div class="main-content">
         <!-- Status Atual da Rede -->
-        <div class="card">
+            <div class="card">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                <h2>📊 Status da Rede</h2>
-                <button onclick="refreshAll()" class="btn refresh-btn">🔄 Atualizar Tudo</button>
+                <h2>Status da Rede</h2>
+                <button onclick="refreshAll()" class="btn" style="background: #27ae60;">Atualizar</button>
             </div>
             <div id="network-status">
                 <p class="loading">Carregando status da rede<span class="loading-dots"></span></p>
             </div>
         </div>
-        <!-- Tabs para diferentes tipos de configuração -->
+
+        <!-- Conexões Unificadas -->
         <div class="card">
-            <div class="tabs">
-                <button class="tab active" onclick="switchTab('ethernet')">🔌 Ethernet</button>
-                <button class="tab" onclick="switchTab('wifi')">📶 Wi-Fi</button>
-                <button class="tab" onclick="switchTab('connections')">⚙️ Conexões</button>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                <h2>🔌 Minhas Conexões</h2>
+                <button onclick="openAddConnectionModal()" class="btn" style="background: #27ae60;">➕ Nova Conexão</button>
             </div>
-            <!-- Tab Ethernet -->
-            <div id="ethernet-tab" class="tab-content active">
-                <h3>Configuração Ethernet</h3>
-                <form onsubmit="configureEthernet(event)">
-                    <div class="form-group">
-                        <label for="eth-name">Nome da Conexão:</label>
-                        <input type="text" id="eth-name" placeholder="Conexão Ethernet" value="ethernet-eth0">
-                    </div>
-                    <div class="form-group">
-                        <label for="eth-ip-type">Tipo de IP:</label>
-                        <select id="eth-ip-type" onchange="toggleStaticConfig('eth')">
-                            <option value="dhcp">DHCP (Automático)</option>
-                            <option value="static">IP Estático</option>
-                        </select>
-                    </div>
-                    
-                    <div id="eth-static-config" class="static-config" style="display: none;">
-                        <h4>Configuração IP Estático</h4>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label for="eth-ip">Endereço IP:</label>
-                                <input type="text" id="eth-ip" placeholder="ex: 192.168.1.100/24">
-                            </div>
-                            <div class="form-group">
-                                <label for="eth-gateway">Gateway:</label>
-                                <input type="text" id="eth-gateway" placeholder="ex: 192.168.1.1">
-                            </div>
-                        </div>
-                        <div class="form-group">
-                            <label for="eth-dns">Servidores DNS:</label>
-                            <input type="text" id="eth-dns" placeholder="ex: 8.8.8.8,8.8.4.4">
-                            <small>Separar múltiplos DNS com vírgula</small>
-                        </div>
-                    </div>
-                    
-                    <button type="submit" class="btn">💾 Configurar Ethernet</button>
-                </form>
-                <div id="eth-message" style="margin-top: 1rem;"></div>
-            </div>
-            <!-- Tab Wi-Fi -->
-            <div id="wifi-tab" class="tab-content">
-                <h3>Configuração Wi-Fi</h3>
-                <div class="form-group">
-                    <label>Redes Disponíveis:</label>
-                    <div style="display: flex; gap: 0.5rem;">
-                        <select id="wifi-list" style="flex: 1;">
-                            <option value="">Clique em "Buscar Redes"</option>
-                        </select>
-                        <button type="button" onclick="scanWifi()" class="btn">📡 Buscar Redes</button>
-                    </div>
-                </div>
-                
-                <form onsubmit="connectWifi(event)">
-                    <div class="form-group">
-                        <label for="wifi-ssid">SSID (Nome da rede):</label>
-                        <input type="text" id="wifi-ssid" required placeholder="Nome da rede Wi-Fi">
-                    </div>
-                    <div class="form-group">
-                        <label for="wifi-password">Senha:</label>
-                        <input type="password" id="wifi-password" placeholder="Senha da rede Wi-Fi">
-                    </div>
-                    <div class="form-group">
-                        <label for="wifi-name">Nome da Conexão:</label>
-                        <input type="text" id="wifi-name" placeholder="Conexão Wi-Fi" value="wifi-connection">
-                    </div>
-                    <button type="submit" class="btn">📶 Conectar Wi-Fi</button>
-                </form>
-                <div id="wifi-message" style="margin-top: 1rem;"></div>
-            </div>
-            <!-- Tab Conexões -->
-            <div id="connections-tab" class="tab-content">
-                <h3>Gerenciar Conexões</h3>
-                <div id="connections-list">
-                    <p class="loading">Carregando conexões<span class="loading-dots"></span></p>
-                </div>
+            
+            <div id="message-container"></div>
+            <div id="connections-list">
+                <p class="loading">Carregando conexões<span class="loading-dots"></span></p>
             </div>
         </div>
+
         <!-- Informações de Ajuda -->
         <div class="card">
             <h2>💡 Informações</h2>
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem;">
                 <div>
-                    <h4>🔌 Ethernet</h4>
+                    <h4>⚙️ Como usar</h4>
                     <ul style="padding-left: 1.5rem;">
-                        <li>Configure conexão cabeada</li>
-                        <li>DHCP para IP automático</li>
-                        <li>IP estático para configuração manual</li>
+                        <li>Clique em <strong>⚙️ Editar</strong> para modificar uma conexão</li>
+                        <li>Use <strong>▶️ Ativar/⏸️ Desativar</strong> para controlar</li>
+                        <li>Clique em <strong>🗑️ Deletar</strong> para remover</li>
                     </ul>
                 </div>
                 <div>
-                    <h4>📶 Wi-Fi</h4>
+                    <h4>🔌 Ethernet vs 📶 Wi-Fi</h4>
                     <ul style="padding-left: 1.5rem;">
-                        <li>Busque redes disponíveis</li>
-                        <li>Conecte-se a redes Wi-Fi</li>
-                        <li>Suporte a WPA/WPA2</li>
+                        <li><strong>Ethernet:</strong> Conexão cabeada (mais estável)</li>
+                        <li><strong>Wi-Fi:</strong> Conexão sem fio (mais flexível)</li>
+                        <li>Você pode ter ambas ativas simultaneamente</li>
                     </ul>
                 </div>
                 <div>
-                    <h4>⚙️ Conexões</h4>
+                    <h4>🌐 Tipos de IP</h4>
                     <ul style="padding-left: 1.5rem;">
-                        <li>Visualize todas as conexões</li>
-                        <li>Ative/desative conexões</li>
-                        <li>Gerencie configurações</li>
+                        <li><strong>DHCP:</strong> IP automático do roteador</li>
+                        <li><strong>Estático:</strong> IP configurado manualmente</li>
+                        <li>Clique para copiar IPs com ícone 📋</li>
                     </ul>
                 </div>
             </div>
         </div>
     </div>
+
+    <!-- Modal de Edição -->
+    <div id="editModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title" id="modalTitle">Nova Conexão</h2>
+                <button class="modal-close" onclick="closeEditModal()">✕</button>
+            </div>
+            
+            <div id="editModeWarning" style="display: none; background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px; padding: 0.75rem; margin-bottom: 1rem; color: #856404; font-size: 0.9rem;">
+                ⚠️ <strong>Modo Edição:</strong> Em edição, você só pode alterar as configurações de IP (DHCP/Estático). Para mudar o tipo de conexão, delete esta e crie uma nova.
+            </div>
+
+            <div id="modal-message"></div>
+
+            <div class="config-section">
+                <h4>📌 Tipo de Conexão</h4>
+                <div class="ip-type-buttons" style="grid-template-columns: 1fr 1fr;">
+                    <button class="ip-type-btn active" onclick="selectConnectionType('ethernet')" data-type="ethernet">
+                        🔌 Ethernet
+                    </button>
+                    <button class="ip-type-btn" onclick="selectConnectionType('wifi')" data-type="wifi">
+                        📶 Wi-Fi
+                    </button>
+                </div>
+            </div>
+
+            <!-- Configuração Ethernet -->
+            <div id="ethernet-config" class="config-section">
+                <h4>Ethernet</h4>
+                <div class="form-group">
+                    <label for="ethDevice">Interface:</label>
+                    <select id="ethDevice">
+                        <option value="eth0">eth0</option>
+                        <option value="eth1">eth1</option>
+                        <option value="enp0s3">enp0s3</option>
+                        <option value="enp0s4">enp0s4</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Configuração Wi-Fi -->
+            <div id="wifi-config" class="config-section" style="display: none;">
+                <h4>Wi-Fi</h4>
+                <div class="form-group">
+                    <label for="wifiSSID">SSID (Nome da Rede):</label>
+                    <input type="text" id="wifiSSID" placeholder="Nome da rede Wi-Fi">
+                </div>
+                <div class="form-group">
+                    <label for="wifiPassword">Senha:</label>
+                    <input type="password" id="wifiPassword" placeholder="Senha da rede Wi-Fi">
+                </div>
+            </div>
+
+            <!-- Configuração IP -->
+            <div class="config-section">
+                <h4>🌐 Configuração IP</h4>
+                <div class="ip-type-buttons">
+                    <button class="ip-type-btn active" onclick="selectIPType('dhcp')" data-iptype="dhcp">
+                        🔄 DHCP
+                    </button>
+                    <button class="ip-type-btn" onclick="selectIPType('static')" data-iptype="static">
+                        📍 Estático
+                    </button>
+                </div>
+
+                <div id="static-config" style="display: none;">
+                    <div class="form-group">
+                        <label for="ipAddress">Endereço IP:</label>
+                        <input type="text" id="ipAddress" placeholder="ex: 192.168.1.100/24">
+                        <small>Inclua a máscara de rede (ex: /24 para 255.255.255.0)</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="ipGateway">Gateway:</label>
+                        <input type="text" id="ipGateway" placeholder="ex: 192.168.1.1">
+                    </div>
+                    <div class="form-group">
+                        <label for="ipDNS">Servidores DNS:</label>
+                        <input type="text" id="ipDNS" placeholder="ex: 8.8.8.8,8.8.4.4">
+                        <small>Separar múltiplos DNS com vírgula</small>
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-actions">
+                <button class="modal-save" onclick="saveConnection()">💾 Salvar</button>
+                <button class="modal-cancel" onclick="closeEditModal()">Cancelar</button>
+                <button class="modal-delete" id="deleteBtn" style="display: none;" onclick="deleteConnection()">🗑️ Deletar Conexão</button>
+            </div>
+        </div>
+    </div>
     <script>
-        let currentTab = 'ethernet';
-        // Alternar entre tabs
-        function switchTab(tabName) {
-            // Esconder todas as tabs
-            document.querySelectorAll('.tab-content').forEach(tab => {
-                tab.classList.remove('active');
-            });
-            document.querySelectorAll('.tab').forEach(tab => {
-                tab.classList.remove('active');
+        let currentEditingConnection = null;
+        let currentConnectionType = 'ethernet';
+        let currentIPType = 'dhcp';
+
+        // ===== MODAL FUNCTIONS =====
+        function openAddConnectionModal() {
+            currentEditingConnection = null;
+            document.getElementById('modalTitle').textContent = '➕ Nova Conexão';
+            document.getElementById('deleteBtn').style.display = 'none';
+            
+            // Habilitar seleção de tipo (Nova Conexão)
+            enableConnectionTypeSelection(true);
+            
+            // Reset forms
+            selectConnectionType('ethernet');
+            selectIPType('dhcp');
+            document.getElementById('ethDevice').value = 'eth0';
+            document.getElementById('wifiSSID').value = '';
+            document.getElementById('wifiPassword').value = '';
+            document.getElementById('ipAddress').value = '';
+            document.getElementById('ipGateway').value = '';
+            document.getElementById('ipDNS').value = '';
+            document.getElementById('modal-message').innerHTML = '';
+            
+            document.getElementById('editModal').classList.add('active');
+        }
+
+        function openEditConnectionModal(connectionName) {
+            currentEditingConnection = connectionName;
+            document.getElementById('modalTitle').textContent = `⚙️ Editar: ${connectionName}`;
+            document.getElementById('deleteBtn').style.display = 'block';
+            document.getElementById('modal-message').innerHTML = '';
+            
+            // Desabilitar seleção de tipo (apenas edita IP)
+            enableConnectionTypeSelection(false);
+
+            // Carregar dados da conexão existente
+            fetch(`/api/network/connection/${encodeURIComponent(connectionName)}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) {
+                        showModalMessage(`Erro: ${data.error}`, 'error');
+                        return;
+                    }
+                    
+                    // Preencher dados (sem permitir alteração de tipo)
+                    selectConnectionType(data.type === 'wifi' ? 'wifi' : 'ethernet');
+                    
+                    if (data.type === 'wifi') {
+                        document.getElementById('wifiSSID').value = data.ssid || '';
+                    } else {
+                        document.getElementById('ethDevice').value = data.device || 'eth0';
+                    }
+
+                    selectIPType(data.ip_type === 'static' ? 'static' : 'dhcp');
+                    
+                    if (data.ip_type === 'static') {
+                        document.getElementById('ipAddress').value = data.ip_address || '';
+                        document.getElementById('ipGateway').value = data.gateway || '';
+                        document.getElementById('ipDNS').value = data.dns || '';
+                    }
+                })
+                .catch(err => showModalMessage(`Erro ao carregar: ${err.message}`, 'error'));
+
+            document.getElementById('editModal').classList.add('active');
+        }
+        
+        function enableConnectionTypeSelection(enabled) {
+            const typeButtons = document.querySelectorAll('[data-type]');
+            const ethConfig = document.getElementById('ethernet-config');
+            const wifiConfig = document.getElementById('wifi-config');
+            const warningDiv = document.getElementById('editModeWarning');
+            
+            // Mostrar aviso apenas em modo edição
+            if (warningDiv) {
+                warningDiv.style.display = enabled ? 'none' : 'block';
+            }
+            
+            typeButtons.forEach(btn => {
+                btn.style.opacity = enabled ? '1' : '0.5';
+                btn.style.cursor = enabled ? 'pointer' : 'not-allowed';
+                btn.style.pointerEvents = enabled ? 'auto' : 'none';
             });
             
-            // Mostrar tab selecionada
-            document.getElementById(tabName + '-tab').classList.add('active');
-            document.querySelector(`.tab[onclick="switchTab('${tabName}')"]`).classList.add('active');
-            currentTab = tabName;
+            // Desabilitar campos de tipo quando em edição
+            if (ethConfig) {
+                const ethFields = ethConfig.querySelectorAll('input, select');
+                ethFields.forEach(field => {
+                    field.disabled = !enabled;
+                    field.style.opacity = enabled ? '1' : '0.6';
+                });
+            }
             
-            // Carregar dados específicos da tab
-            if (tabName === 'connections') {
-                loadConnections();
-            } else if (tabName === 'wifi') {
-                scanWifi();
+            if (wifiConfig) {
+                const wifiFields = wifiConfig.querySelectorAll('input, select');
+                wifiFields.forEach(field => {
+                    field.disabled = !enabled;
+                    field.style.opacity = enabled ? '1' : '0.6';
+                });
             }
         }
-        // Carregar status da rede
+
+        function closeEditModal() {
+            document.getElementById('editModal').classList.remove('active');
+            currentEditingConnection = null;
+        }
+
+        function selectConnectionType(type) {
+            currentConnectionType = type;
+            document.querySelectorAll('[data-type]').forEach(btn => {
+                btn.classList.toggle('active', btn.getAttribute('data-type') === type);
+            });
+            
+            document.getElementById('ethernet-config').style.display = type === 'ethernet' ? 'block' : 'none';
+            document.getElementById('wifi-config').style.display = type === 'wifi' ? 'block' : 'none';
+        }
+
+        function selectIPType(type) {
+            currentIPType = type;
+            document.querySelectorAll('[data-iptype]').forEach(btn => {
+                btn.classList.toggle('active', btn.getAttribute('data-iptype') === type);
+            });
+            
+            document.getElementById('static-config').style.display = type === 'static' ? 'block' : 'none';
+        }
+
+        function saveConnection() {
+            // Se está em edição, apenas salvar configurações de IP
+            if (currentEditingConnection) {
+                const config = {
+                    type: 'ip_only', // Flag especial para indicar que é apenas IP
+                    ip_type: currentIPType
+                };
+
+                if (currentIPType === 'static') {
+                    config.ip_address = document.getElementById('ipAddress').value.trim();
+                    config.gateway = document.getElementById('ipGateway').value.trim();
+                    config.dns = document.getElementById('ipDNS').value.trim();
+                    
+                    if (!config.ip_address) {
+                        showModalMessage('Por favor, preencha o endereço IP', 'error');
+                        return;
+                    }
+                }
+
+                const endpoint = `/api/network/connection/${encodeURIComponent(currentEditingConnection)}`;
+
+                fetch(endpoint, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(config)
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        showMessage('✅ Configuração IP salva com sucesso!', 'success');
+                        setTimeout(() => {
+                            closeEditModal();
+                            loadConnections();
+                            loadNetworkStatus();
+                        }, 1000);
+                    } else {
+                        showModalMessage(`Erro: ${data.error}`, 'error');
+                    }
+                })
+                .catch(err => showModalMessage(`Erro: ${err.message}`, 'error'));
+                return;
+            }
+
+            // Nova Conexão - permitir todas as configurações
+            const config = {
+                type: currentConnectionType
+            };
+
+            if (currentConnectionType === 'wifi') {
+                config.ssid = document.getElementById('wifiSSID').value.trim();
+                if (!config.ssid) {
+                    showModalMessage('Por favor, preencha o SSID', 'error');
+                    return;
+                }
+                config.password = document.getElementById('wifiPassword').value;
+                config.name = `wifi-${config.ssid}`;
+            } else {
+                config.device = document.getElementById('ethDevice').value;
+                config.name = `ethernet-${config.device}`;
+            }
+
+            config.ip_type = currentIPType;
+            if (currentIPType === 'static') {
+                config.ip_address = document.getElementById('ipAddress').value.trim();
+                config.gateway = document.getElementById('ipGateway').value.trim();
+                config.dns = document.getElementById('ipDNS').value.trim();
+                
+                if (!config.ip_address) {
+                    showModalMessage('Por favor, preencha o endereço IP', 'error');
+                    return;
+                }
+            }
+
+            fetch('/api/network/configure', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(config)
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    showMessage('✅ Conexão salva com sucesso!', 'success');
+                    setTimeout(() => {
+                        closeEditModal();
+                        loadConnections();
+                        loadNetworkStatus();
+                    }, 1000);
+                } else {
+                    showModalMessage(`Erro: ${data.error}`, 'error');
+                }
+            })
+            .catch(err => showModalMessage(`Erro: ${err.message}`, 'error'));
+        }
+
+        function deleteConnection() {
+            if (!currentEditingConnection) return;
+            
+            if (!confirm(`Tem certeza que deseja deletar "${currentEditingConnection}"?`)) {
+                return;
+            }
+
+            fetch(`/api/network/connection/${encodeURIComponent(currentEditingConnection)}`, {
+                method: 'DELETE'
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    showMessage('🗑️ Conexão deletada com sucesso!', 'success');
+                    setTimeout(() => {
+                        closeEditModal();
+                        loadConnections();
+                        loadNetworkStatus();
+                    }, 1000);
+                } else {
+                    showModalMessage(`Erro: ${data.error}`, 'error');
+                }
+            })
+            .catch(err => showModalMessage(`Erro: ${err.message}`, 'error'));
+        }
+
+        function showModalMessage(message, type) {
+            const container = document.getElementById('modal-message');
+            container.className = type === 'error' ? 'error-message' : 'success-message';
+            container.textContent = message;
+        }
+
+        // ===== LOAD FUNCTIONS =====
         function loadNetworkStatus() {
-            fetch('/api/network/current')
-                .then(response => response.json())
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
+            
+            fetch('/api/network/current', {signal: controller.signal})
+                .then(response => {
+                    clearTimeout(timeoutId);
+                    if (response.status === 401) {
+                        window.location = '/login';
+                        throw new Error('Não autenticado');
+                    }
+                    return response.json();
+                })
                 .then(data => {
                     if (data.error) {
                         document.getElementById('network-status').innerHTML = 
-                            `<p class="error">Erro: ${data.error}</p>`;
+                            `<p class="error-message">${data.error}</p>`;
                         return;
                     }
-                    let statusHTML = '<div class="status-grid">';
+
+                    let statusHTML = '<div>';
                     
                     // Conexões ativas
                     if (data.connections && data.connections.length > 0) {
                         statusHTML += '<h4>🔗 Conexões Ativas:</h4>';
                         data.connections.forEach(conn => {
-                            const statusClass = conn.state === 'ativado' ? 'connection-active' : 'connection-inactive';
+                            const icon = conn.state === 'ativado' ? '🟢' : '🔴';
                             statusHTML += `
-                                <div class="connection-item ${statusClass}">
-                                    <div>
-                                        <strong>${conn.name}</strong><br>
-                                        <small>${conn.device} • ${conn.type} • ${conn.state}</small>
-                                    </div>
+                                <div style="padding: 0.5rem 0; display: flex; justify-content: space-between;">
+                                    <span>${icon} <strong>${conn.name}</strong> (${conn.type})</span>
+                                    <small>${conn.device}</small>
                                 </div>
                             `;
                         });
                     }
+
                     // Endereços IP
                     if (data.devices && data.devices.length > 0) {
-                        statusHTML += '<h4 style="margin-top: 1rem;">🌐 Endereços IP:</h4>';
+                        statusHTML += '<h4 style="margin-top: 1rem;">🌐 IPs Configurados:</h4>';
                         data.devices.forEach(dev => {
                             if (dev.ip4) {
                                 statusHTML += `
-                                    <div class="status-item">
-                                        <strong>${dev.device}:</strong>
-                                        <span>${dev.ip4}</span>
+                                    <div style="padding: 0.5rem 0; display: flex; justify-content: space-between;">
+                                        <span><strong>${dev.device}:</strong></span>
+                                        <span style="font-family: monospace;">${dev.ip4}</span>
                                     </div>
                                 `;
                             }
                         });
                     }
+
                     if (!data.connections || data.connections.length === 0) {
-                        statusHTML += '<p>Nenhuma conexão de rede ativa</p>';
+                        statusHTML += '<p style="color: #7f8c8d;">Nenhuma conexão de rede ativa</p>';
                     }
+
                     statusHTML += '</div>';
                     document.getElementById('network-status').innerHTML = statusHTML;
                 })
                 .catch(error => {
                     document.getElementById('network-status').innerHTML = 
-                        `<p class="error">Erro ao carregar status: ${error.message}</p>`;
+                        `<p class="error-message">Erro ao carregar status: ${error.message}</p>`;
                 });
         }
-        // Buscar redes Wi-Fi
-        function scanWifi() {
-            const wifiList = document.getElementById('wifi-list');
-            wifiList.innerHTML = '<option value="">Buscando redes<span class="loading-dots"></span></option>';
-            
-            fetch('/api/network/wifi/list')
-                .then(response => response.json())
-                .then(data => {
-                    if (data.error) {
-                        wifiList.innerHTML = `<option value="">Erro: ${data.error}</option>`;
-                        return;
-                    }
-                    wifiList.innerHTML = '<option value="">Selecione uma rede</option>';
-                    
-                    if (data.networks && data.networks.length > 0) {
-                        data.networks.forEach(network => {
-                            const signalBars = getSignalBars(network.signal);
-                            const securityBadge = network.security && network.security !== '--' ? 
-                                `<span class="security-badge">${network.security}</span>` : '';
-                            
-                            wifiList.innerHTML += `
-                                <option value="${network.ssid}">
-                                    ${network.ssid} ${securityBadge} - ${signalBars} ${network.signal}%
-                                </option>
-                            `;
-                        });
-                    } else {
-                        wifiList.innerHTML = '<option value="">Nenhuma rede encontrada</option>';
-                    }
-                    // Preencher automaticamente ao selecionar
-                    wifiList.onchange = function() {
-                        if (this.value) {
-                            document.getElementById('wifi-ssid').value = this.value;
-                        }
-                    };
-                })
-                .catch(error => {
-                    wifiList.innerHTML = `<option value="">Erro: ${error.message}</option>`;
-                });
-        }
-        // Gerar barras de sinal
-        function getSignalBars(signal) {
-            const signalValue = parseInt(signal) || 0;
-            const bars = Math.min(4, Math.floor(signalValue / 25));
-            
-            let barsHTML = '<div class="wifi-strength"><div class="signal-bars">';
-            for (let i = 0; i < 4; i++) {
-                const height = (i + 1) * 5 + 5;
-                const isActive = i < bars;
-                barsHTML += `<div class="signal-bar ${isActive ? 'active' : ''}" style="height: ${height}px;"></div>`;
-            }
-            barsHTML += '</div></div>';
-            
-            return barsHTML;
-        }
-        // Configurar Ethernet
-        function configureEthernet(event) {
-            event.preventDefault();
-            
-            const config = {
-                type: 'ethernet',
-                name: document.getElementById('eth-name').value,
-                ip_type: document.getElementById('eth-ip-type').value
-            };
-            if (config.ip_type === 'static') {
-                config.type = 'static';
-                config.ip_address = document.getElementById('eth-ip').value;
-                config.gateway = document.getElementById('eth-gateway').value;
-                config.dns = document.getElementById('eth-dns').value;
-            }
-            fetch('/api/network/configure', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(config)
-            })
-            .then(response => response.json())
-            .then(data => {
-                const messageDiv = document.getElementById('eth-message');
-                if (data.success) {
-                    showMessage(messageDiv, data.message, 'success');
-                    loadNetworkStatus();
-                    loadConnections();
-                } else {
-                    showMessage(messageDiv, 'Erro: ' + data.error, 'error');
-                }
-            })
-            .catch(error => {
-                const messageDiv = document.getElementById('eth-message');
-                showMessage(messageDiv, 'Erro: ' + error, 'error');
-            });
-        }
-        // Conectar Wi-Fi
-        function connectWifi(event) {
-            event.preventDefault();
-            
-            const config = {
-                type: 'wifi',
-                ssid: document.getElementById('wifi-ssid').value,
-                password: document.getElementById('wifi-password').value,
-                name: document.getElementById('wifi-name').value || 'wifi-connection'
-            };
-            if (!config.ssid) {
-                const messageDiv = document.getElementById('wifi-message');
-                showMessage(messageDiv, 'Por favor, digite o SSID da rede', 'error');
-                return;
-            }
-            fetch('/api/network/configure', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(config)
-            })
-            .then(response => response.json())
-            .then(data => {
-                const messageDiv = document.getElementById('wifi-message');
-                if (data.success) {
-                    showMessage(messageDiv, data.message, 'success');
-                    document.getElementById('wifi-password').value = '';
-                    loadNetworkStatus();
-                    loadConnections();
-                } else {
-                    showMessage(messageDiv, 'Erro: ' + data.error, 'error');
-                }
-            })
-            .catch(error => {
-                const messageDiv = document.getElementById('wifi-message');
-                showMessage(messageDiv, 'Erro: ' + error, 'error');
-            });
-        }
-        // Carregar conexões
+
         function loadConnections() {
-            fetch('/api/network/current')
-                .then(response => response.json())
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
+            
+            fetch('/api/network/current', {signal: controller.signal})
+                .then(response => {
+                    clearTimeout(timeoutId);
+                    if (response.status === 401) {
+                        window.location = '/login';
+                        throw new Error('Não autenticado');
+                    }
+                    return response.json();
+                })
                 .then(data => {
                     if (data.error) {
                         document.getElementById('connections-list').innerHTML = 
-                            `<p class="error">Erro: ${data.error}</p>`;
+                            `<p class="error-message">${data.error}</p>`;
                         return;
                     }
-                    let connectionsHTML = '';
-                    
+
+                    let html = '';
                     if (data.connections && data.connections.length > 0) {
-                        connectionsHTML += '<div class="status-grid">';
+                        html = '<div class="connections-container">';
+                        
                         data.connections.forEach(conn => {
-                            const statusClass = conn.state === 'ativado' ? 'connection-active' : 'connection-inactive';
-                            const statusText = conn.state === 'ativado' ? 'Ativa' : 'Inativa';
+                            const isActive = conn.state === 'ativado';
+                            const cardClass = `connection-card ${isActive ? 'active' : 'inactive'}`;
+                            const icon = isActive ? '🟢' : '🔴';
+                            const typeIcon = conn.type === 'wifi' ? '📶' : '🔌';
+                            const badge = `<span class="connection-badge ${isActive ? 'badge-active' : 'badge-inactive'}">${isActive ? '✓ Ativa' : '⊗ Inativa'}</span>`;
+                            const typeBadge = `<span class="connection-badge badge-type">${typeIcon} ${conn.type.toUpperCase()}</span>`;
                             
-                            connectionsHTML += `
-                                <div class="connection-item ${statusClass}">
-                                    <div>
-                                        <strong>${conn.name}</strong><br>
-                                        <small>${conn.device} • ${conn.type} • ${statusText}</small>
+                            html += `
+                                <div class="${cardClass}">
+                                    <div class="connection-header">
+                                        <div class="connection-name">
+                                            ${typeIcon} ${conn.name}
+                                        </div>
+                                        <div style="display: flex; gap: 0.5rem;">
+                                            ${badge}
+                                            ${typeBadge}
+                                        </div>
+                                    </div>
+                                    <div class="connection-details">
+                                        <div class="detail-row">
+                                            <span class="detail-label">Interface:</span>
+                                            <span class="detail-value">${conn.device}</span>
+                                        </div>
+                            `;
+                            
+                            if (conn.ip4) {
+                                html += `
+                                    <div class="detail-row">
+                                        <span class="detail-label">IP:</span>
+                                        <span class="detail-value">
+                                            ${conn.ip4}
+                                            <button class="copy-btn" onclick="copyToClipboard('${conn.ip4}')">📋</button>
+                                        </span>
+                                    </div>
+                                `;
+                            }
+                            
+                            html += `
                                     </div>
                                     <div class="connection-actions">
-                                        <button onclick="toggleConnection('${conn.name}', '${conn.state}')" class="btn">
-                                            ${conn.state === 'ativado' ? '⏸️' : '▶️'}
+                                        <button class="action-btn edit" onclick="openEditConnectionModal('${conn.name.replace(/'/g, "\\'")}')">
+                                            ⚙️ Editar
                                         </button>
-                                        <button onclick="deleteConnection('${conn.name}')" class="btn btn-danger">🗑️</button>
+                                        <button class="action-btn ${isActive ? 'toggle' : 'toggle'}" onclick="toggleConnection('${conn.name.replace(/'/g, "\\'")}', '${conn.state}')">
+                                            ${isActive ? '⏸️ Desativar' : '▶️ Ativar'}
+                                        </button>
+                                        <button class="action-btn delete" onclick="if(confirm('Tem certeza?')) deleteConnectionDirect('${conn.name.replace(/'/g, "\\'")}')">
+                                            🗑️
+                                        </button>
                                     </div>
                                 </div>
                             `;
                         });
-                        connectionsHTML += '</div>';
+
+                        html += '</div>';
                     } else {
-                        connectionsHTML = '<p>Nenhuma conexão configurada</p>';
+                        html = '<p style="text-align: center; color: #7f8c8d; padding: 2rem;">Nenhuma conexão configurada. Clique em "Nova Conexão" para começar!</p>';
                     }
-                    
-                    document.getElementById('connections-list').innerHTML = connectionsHTML;
+
+                    document.getElementById('connections-list').innerHTML = html;
                 })
                 .catch(error => {
                     document.getElementById('connections-list').innerHTML = 
-                        `<p class="error">Erro ao carregar conexões: ${error.message}</p>`;
+                        `<p class="error-message">Erro ao carregar: ${error.message}</p>`;
                 });
         }
-        // Alternar conexão (ativar/desativar)
+
+        // ===== ACTION FUNCTIONS =====
         function toggleConnection(connectionName, currentState) {
             const action = currentState === 'ativado' ? 'down' : 'up';
             
@@ -517,57 +939,77 @@
                     action: action
                 })
             })
-            .then(response => response.json())
+            .then(r => r.json())
             .then(data => {
                 if (data.success) {
+                    showMessage(`Conexão ${action === 'up' ? 'ativada' : 'desativada'}! ✅`, 'success');
                     loadNetworkStatus();
                     loadConnections();
                 } else {
-                    alert('Erro: ' + data.error);
+                    showMessage(`Erro: ${data.error}`, 'error');
                 }
             })
-            .catch(error => {
-                alert('Erro: ' + error);
+            .catch(err => showMessage(`Erro: ${err.message}`, 'error'));
+        }
+
+        function deleteConnectionDirect(connectionName) {
+            fetch(`/api/network/connection/${encodeURIComponent(connectionName)}`, {
+                method: 'DELETE'
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    showMessage('🗑️ Conexão deletada!', 'success');
+                    loadConnections();
+                    loadNetworkStatus();
+                } else {
+                    showMessage(`Erro: ${data.error}`, 'error');
+                }
+            })
+            .catch(err => showMessage(`Erro: ${err.message}`, 'error'));
+        }
+
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                showMessage('📋 Copiado!', 'success');
+            }).catch(() => {
+                alert('Erro ao copiar');
             });
         }
-        // Deletar conexão
-        function deleteConnection(connectionName) {
-            if (confirm(`Tem certeza que deseja deletar a conexão "${connectionName}"?`)) {
-                // Implementar deleção de conexão
-                alert('Funcionalidade de deleção em desenvolvimento');
-            }
-        }
-        // Alternar configuração estática
-        function toggleStaticConfig(type) {
-            const element = document.getElementById(`${type}-static-config`);
-            const select = document.getElementById(`${type}-ip-type`);
-            element.style.display = select.value === 'static' ? 'block' : 'none';
-        }
-        // Atualizar tudo
+
         function refreshAll() {
             loadNetworkStatus();
-            if (currentTab === 'wifi') {
-                scanWifi();
-            }
-            if (currentTab === 'connections') {
-                loadConnections();
-            }
+            loadConnections();
         }
-        // Mostrar mensagem
-        function showMessage(element, message, type) {
-            element.className = type;
-            element.textContent = message;
-            element.style.display = 'block';
+
+        function showMessage(message, type) {
+            const container = document.getElementById('message-container');
+            const className = type === 'error' ? 'error-message' : 'success-message';
+            
+            const msgEl = document.createElement('div');
+            msgEl.className = className;
+            msgEl.textContent = message;
+            
+            container.appendChild(msgEl);
             
             setTimeout(() => {
-                element.style.display = 'none';
-            }, 5000);
+                msgEl.remove();
+            }, 4000);
         }
-        // Carregar dados iniciais
+
+        // ===== INIT =====
         document.addEventListener('DOMContentLoaded', function() {
             loadNetworkStatus();
-            scanWifi();
+            loadConnections();
         });
+
+        // Fechar modal ao clicar fora
+        window.onclick = function(event) {
+            const modal = document.getElementById('editModal');
+            if (event.target === modal) {
+                closeEditModal();
+            }
+        }
     </script>
 </body>
 </html>

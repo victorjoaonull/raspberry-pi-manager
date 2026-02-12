@@ -44,10 +44,34 @@ if ! id "administrador" &>/dev/null; then
     echo -e "${YELLOW}⚠️  ALTERE A SENHA APÓS A INSTALAÇÃO!${NC}"
 fi
 
+# ========== LIMPAR INSTALAÇÕES ANTIGAS ==========
+echo -e "${BLUE}[--]${NC} Removendo possíveis instalações antigas que contenham 'pi-manager' no nome..."
+SEARCH_PATHS=("/home" "/opt" "/usr/local" "/srv" "/var/www" "/root" "/tmp")
+FOUND=()
+for p in "${SEARCH_PATHS[@]}"; do
+    if [ -d "$p" ]; then
+        while IFS= read -r -d $'\0' d; do
+            FOUND+=("$d")
+        done < <(find "$p" -maxdepth 3 -type d -iname "*pi-manager*" -print0 2>/dev/null || true)
+    fi
+done
+if [ ${#FOUND[@]} -gt 0 ]; then
+    echo "Encontrado diretórios para remoção:" 
+    for d in "${FOUND[@]}"; do
+        echo "  - $d"
+    done
+    echo "Removendo..."
+    for d in "${FOUND[@]}"; do
+        rm -rf "$d" || true
+    done
+else
+    echo "Nenhuma instalação antiga encontrada."
+fi
+
 # ========== VARIÁVEIS DE CONFIGURAÇÃO ==========
-INSTALL_DIR="/home/administrador/pi-manager"
+INSTALL_DIR="/home/administrador/raspberry-pi-manager"
 VENV_DIR="$INSTALL_DIR/venv"
-SERVICE_NAME="pi-manager"
+SERVICE_NAME="raspberry-pi-manager"
 REPO_DIR="$(pwd)"
 
 # ========== ATUALIZAR SISTEMA ==========
@@ -67,7 +91,9 @@ chown administrador:administrador "$INSTALL_DIR"
 # ========== COPIAR ARQUIVOS DO PROJETO ==========
 echo -e "${BLUE}[5/12]${NC} Copiando arquivos do projeto..."
 cp -r "$REPO_DIR/src/"* "$INSTALL_DIR/"
-cp "$REPO_DIR/requirements.txt" "$INSTALL_DIR/"
+if [ -f "$REPO_DIR/requirements.txt" ]; then
+    cp "$REPO_DIR/requirements.txt" "$INSTALL_DIR/"
+fi
 chown -R administrador:administrador "$INSTALL_DIR"
 
 # ========== CRIAR AMBIENTE VIRTUAL ==========
@@ -81,17 +107,17 @@ sudo -u administrador "$VENV_DIR/bin/pip" install -r "$INSTALL_DIR/requirements.
 
 # ========== CRIAR SHELL SCRIPT WRAPPER ==========
 echo -e "${BLUE}[8/12]${NC} Criando script wrapper..."
-cat > "$INSTALL_DIR/run.sh" << 'EOF'
+cat > "$INSTALL_DIR/run.sh" << EOF
 #!/bin/bash
 set -e
 
-cd /home/administrador/pi-manager
+cd "$INSTALL_DIR"
 
 # Ativar ambiente virtual
 if [ -f "venv/bin/activate" ]; then
     source venv/bin/activate
 else
-    echo "❌ Ambiente virtual não encontrado"
+    echo "Ambiente virtual não encontrado"
     exit 1
 fi
 
@@ -122,44 +148,139 @@ fi
 
 # ========== CONFIGURAR PERMISSÕES SUDO ==========
 echo -e "${BLUE}[10/12]${NC} Configurando permissões sudo..."
-cat > /etc/sudoers.d/pi-manager << 'EOF'
-administrador ALL=(ALL) NOPASSWD: /usr/bin/nmcli
-administrador ALL=(ALL) NOPASSWD: /usr/bin/chpasswd
-administrador ALL=(ALL) NOPASSWD: /usr/bin/hostnamectl
-administrador ALL=(ALL) NOPASSWD: /usr/bin/chromium-browser
-administrador ALL=(ALL) NOPASSWD: /usr/bin/chromium
-administrador ALL=(ALL) NOPASSWD: /bin/systemctl
-administrador ALL=(ALL) NOPASSWD: /usr/bin/pkill
-administrador ALL=(ALL) NOPASSWD: /usr/bin/killall
-administrador ALL=(ALL) NOPASSWD: /usr/bin/sed
-administrador ALL=(ALL) NOPASSWD: /sbin/shutdown
-administrador ALL=(ALL) NOPASSWD: /sbin/reboot
-administrador ALL=(ALL) NOPASSWD: /bin/chown
-administrador ALL=(ALL) NOPASSWD: /bin/chmod
+cat > /usr/local/bin/pi-manager-nmcli << 'EOF'
+#!/bin/bash
+# Wrapper seguro para nmcli chamado pelo pi-manager.
+# Loga a chamada e passa os argumentos para nmcli.
+LOG=/var/log/pi-manager-nmcli.log
+mkdir -p "$(dirname "$LOG")"
+echo "$(date -Iseconds) nmcli called by $(whoami) args: $*" >> "$LOG"
+# Aqui você pode adicionar validações adicionais dos argumentos.
+exec /usr/bin/nmcli "$@"
 EOF
+
+chmod 750 /usr/local/bin/pi-manager-nmcli
+chown root:root /usr/local/bin/pi-manager-nmcli
+
+touch /var/log/pi-manager-nmcli.log || true
+chown root:adm /var/log/pi-manager-nmcli.log || true
+chmod 640 /var/log/pi-manager-nmcli.log || true
+
+# Wrapper seguro para chpasswd (apenas altera senha do usuário 'administrador')
+cat > /usr/local/bin/pi-manager-chpasswd << 'EOF'
+#!/bin/bash
+LOG=/var/log/pi-manager-chpasswd.log
+mkdir -p "$(dirname "$LOG")"
+echo "$(date -Iseconds) chpasswd called by $(whoami)" >> "$LOG"
+# Leia stdin e verifique formato
+read LINE
+if [[ "$LINE" != administrador:* ]]; then
+    echo "Only administrador password changes allowed" >&2
+    exit 1
+fi
+echo "$LINE" | /usr/sbin/chpasswd
+EXIT_CODE=$?
+echo "$(date -Iseconds) result: $EXIT_CODE" >> "$LOG"
+exit $EXIT_CODE
+EOF
+
+chmod 750 /usr/local/bin/pi-manager-chpasswd
+chown root:root /usr/local/bin/pi-manager-chpasswd
+touch /var/log/pi-manager-chpasswd.log || true
+chown root:adm /var/log/pi-manager-chpasswd.log || true
+chmod 640 /var/log/pi-manager-chpasswd.log || true
+
+# Wrapper seguro para hostname (valida e aplica hostname persistente)
+cat > /usr/local/bin/pi-manager-hostname << 'EOF'
+#!/bin/bash
+LOG=/var/log/pi-manager-hostname.log
+mkdir -p "$(dirname "$LOG")"
+echo "$(date -Iseconds) hostname called by $(whoami) args: $*" >> "$LOG"
+NEWHOST="$1"
+if [ -z "$NEWHOST" ]; then
+    echo "Uso: pi-manager-hostname <hostname>" >&2
+    exit 1
+fi
+# Validação simples do hostname
+if ! [[ "$NEWHOST" =~ ^[A-Za-z0-9-]{1,63}$ ]]; then
+    echo "Hostname inválido" >&2
+    echo "$(date -Iseconds) invalid hostname: $NEWHOST" >> "$LOG"
+    exit 2
+fi
+# Aplica hostname via hostnamectl
+/usr/bin/hostnamectl set-hostname "$NEWHOST"
+RC=$?
+if [ $RC -ne 0 ]; then
+    echo "hostnamectl falhou com code $RC" >> "$LOG"
+    exit $RC
+fi
+# Atualiza /etc/hostname (arquivo persistente)
+echo "$NEWHOST" > /etc/hostname
+chown root:root /etc/hostname
+chmod 644 /etc/hostname
+
+# Atualiza /etc/hosts: substitui 127.0.1.1 existente ou adiciona
+if grep -q "^127.0.1.1" /etc/hosts; then
+    sed -i "s/^127.0.1.1.*/127.0.1.1\t$NEWHOST/" /etc/hosts
+else
+    echo -e "127.0.1.1\t$NEWHOST" >> /etc/hosts
+fi
+
+echo "$(date -Iseconds) hostname set to $NEWHOST" >> "$LOG"
+exit 0
+EOF
+
+chmod 750 /usr/local/bin/pi-manager-hostname
+chown root:root /usr/local/bin/pi-manager-hostname
+touch /var/log/pi-manager-hostname.log || true
+chown root:adm /var/log/pi-manager-hostname.log || true
+chmod 640 /var/log/pi-manager-hostname.log || true
+
+# Escreve sudoers restrito apontando apenas para o wrapper (valide com visudo)
+
+cat > /etc/sudoers.d/pi-manager << 'EOF'
+administrador ALL=(root) NOPASSWD: /usr/local/bin/pi-manager-nmcli, /usr/local/bin/pi-manager-chpasswd, /usr/local/bin/pi-manager-hostname
+EOF
+chown root:root /etc/sudoers.d/pi-manager
 chmod 440 /etc/sudoers.d/pi-manager
 
+# Validar o arquivo sudoers criado
+if ! visudo -cf /etc/sudoers.d/pi-manager >/dev/null 2>&1; then
+    echo -e "${RED}❌ Erro: o arquivo /etc/sudoers.d/pi-manager contém erros${NC}"
+    exit 1
+fi
+
 # ========== CONFIGURAR SERVIÇO SYSTEMD ==========
+[ -n "$SERVICE_NAME" ] || SERVICE_NAME="${SERVICE_NAME}"
 echo -e "${BLUE}[11/12]${NC} Configurando serviço systemd..."
-cat > /etc/systemd/system/pi-manager.service << 'EOF'
+cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
 [Unit]
 Description=Gerenciador Web Raspberry PI
 After=network-online.target
 Wants=network-online.target
 
 [Service]
+
 Type=simple
 User=administrador
 Group=administrador
-WorkingDirectory=/home/administrador/pi-manager
-ExecStart=/bin/bash /home/administrador/pi-manager/run.sh
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/venv/bin/python $INSTALL_DIR/app.py
 Restart=always
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=pi-manager
+SyslogIdentifier=${SERVICE_NAME}
 
-# Ambiente completo
+# Segurança / sandboxing
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=$INSTALL_DIR /home/administrador/chromium-profile
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Ambiente mínimo
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="PYTHONUNBUFFERED=1"
 
@@ -168,7 +289,7 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable pi-manager.service
+systemctl enable ${SERVICE_NAME}.service || true
 
 # ========== CONFIGURAR AUTO-LOGIN ==========
 echo -e "${BLUE}[12/12]${NC} Configurando auto-login gráfico..."
@@ -185,6 +306,32 @@ echo -e "${BLUE}[13/12]${NC} Configurando Chromium..."
 # Criar diretório de perfil personalizado
 mkdir -p /home/administrador/chromium-profile
 chown -R administrador:administrador /home/administrador/chromium-profile
+
+# Criar atalho .desktop "Chromium-Raspberry" no Desktop do usuário e em autostart
+echo -e "${BLUE}⚙️  Criando atalho Chromium-Raspberry...${NC}"
+USER_DESKTOP_DIR="/home/administrador/Desktop"
+USER_AUTOSTART_DIR="/home/administrador/.config/autostart"
+mkdir -p "$USER_DESKTOP_DIR"
+mkdir -p "$USER_AUTOSTART_DIR"
+
+# Detecta binário do Chromium
+if [ -x "/usr/bin/chromium" ]; then
+    CHROMIUM_BIN="/usr/bin/chromium"
+elif [ -x "/usr/bin/chromium-browser" ]; then
+    CHROMIUM_BIN="/usr/bin/chromium-browser"
+else
+    CHROMIUM_BIN="chromium"
+fi
+
+DESKTOP_FILE_CONTENT="[Desktop Entry]\nName=Chromium-Raspberry\nComment=Chromium custom profile for Raspberry PI Manager\nExec=$CHROMIUM_BIN --user-data-dir=/home/administrador/chromium-profile --no-first-run --start-maximized --ignore-certificate-errors --noerrdialogs --disable-session-crashed-bubble %U\nTerminal=false\nType=Application\nCategories=Network;WebBrowser;\nStartupNotify=false\n"
+
+echo -e "$DESKTOP_FILE_CONTENT" > "$USER_DESKTOP_DIR/Chromium-Raspberry.desktop"
+echo -e "[Desktop Entry]\nName=Chromium-Raspberry\nComment=Autostart Chromium custom profile for Raspberry PI Manager\nExec=$CHROMIUM_BIN --user-data-dir=/home/administrador/chromium-profile --no-first-run --start-maximized --ignore-certificate-errors --noerrdialogs --disable-session-crashed-bubble\nTerminal=false\nType=Application\nX-GNOME-Autostart-enabled=true\nStartupNotify=false\n" > "$USER_AUTOSTART_DIR/Chromium-Raspberry.desktop"
+
+chown administrador:administrador "$USER_DESKTOP_DIR/Chromium-Raspberry.desktop" || true
+chown administrador:administrador "$USER_AUTOSTART_DIR/Chromium-Raspberry.desktop" || true
+chmod 755 "$USER_DESKTOP_DIR/Chromium-Raspberry.desktop" || true
+chmod 644 "$USER_AUTOSTART_DIR/Chromium-Raspberry.desktop" || true
 
 # ========== INSTALAÇÃO CONCLUÍDA ==========
 echo ""
@@ -220,7 +367,7 @@ echo -e "  • ALTERE A SENHA PADRÃO após o primeiro login!"
 echo ""
 
 echo -e "${BLUE}🔄 Iniciando o serviço...${NC}"
-systemctl start pi-manager.service
+systemctl start ${SERVICE_NAME}.service || true
 sleep 3
 
 # Verificar se o serviço está rodando

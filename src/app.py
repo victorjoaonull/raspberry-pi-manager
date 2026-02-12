@@ -11,14 +11,73 @@ import shutil
 import hashlib
 from pathlib import Path
 from datetime import datetime
+from collections import deque
+import hmac
+import hashlib
+import threading
+import subprocess
 
 app = Flask(__name__)
-app.secret_key = 'sua_chave_secreta_aqui_altere_para_uma_chave_segura'
+app.secret_key = 'sil1234567890'  # Chave secreta para sessões
+
+
+
+# Pequeno log de eventos em memória para mostrar no dashboard
+EVENT_LOG = deque(maxlen=200)
+
+def add_event(msg):
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    entry = f"[{ts}] {msg}"
+    try:
+        EVENT_LOG.appendleft(entry)
+    except Exception:
+        pass
+    print(entry)
+
+# Caminho para o wrapper criado pelo instalador
+NMCLI_WRAPPER = '/usr/local/bin/pi-manager-nmcli'
+CHPASS_WRAPPER = '/usr/local/bin/pi-manager-chpasswd'
+HOSTNAME_WRAPPER = '/usr/local/bin/pi-manager-hostname'
+
+def run_nmcli(args, capture_output=True, text=True, timeout=None):
+    """Executa nmcli via wrapper seguro, com fallback para nmcli puro se necessário."""
+    # cmd via wrapper (sudoers permite execução sem senha do wrapper)
+    cmd = ['sudo', NMCLI_WRAPPER] + args
+    try:
+        return subprocess.run(cmd, capture_output=capture_output, text=text, timeout=timeout)
+    except FileNotFoundError:
+        # Fallback: tente chamar nmcli diretamente
+        try:
+            fb_cmd = ['sudo', 'nmcli'] + args
+            return subprocess.run(fb_cmd, capture_output=capture_output, text=text, timeout=timeout)
+        except Exception as e:
+            raise
+
+def run_chpasswd(user, password, capture_output=True, text=True, timeout=None):
+    """Executa o wrapper seguro para alterar senha via stdin."""
+    cmd = ['sudo', CHPASS_WRAPPER]
+    inp = f"{user}:{password}\n"
+    return subprocess.run(cmd, input=inp, capture_output=capture_output, text=text, timeout=timeout)
+
+def run_hostname(new_hostname, capture_output=True, text=True, timeout=10):
+    """Call the hostname wrapper to set persistent hostname."""
+    cmd = ['sudo', HOSTNAME_WRAPPER, new_hostname]
+    try:
+        return subprocess.run(cmd, capture_output=capture_output, text=text, timeout=timeout)
+    except FileNotFoundError:
+        # Wrapper missing -> attempt direct call (may require password and fail)
+        try:
+            return subprocess.run(['sudo', 'hostnamectl', 'set-hostname', new_hostname], capture_output=capture_output, text=text, timeout=timeout)
+        except Exception as e:
+            raise
 
 # Configurações
 CONFIG_DIR = '/home/administrador/pi-manager/config'
 NETWORK_CONFIG = os.path.join(CONFIG_DIR, 'network.conf')
 AUTOSTART_CONFIG = os.path.join(CONFIG_DIR, 'autostart.conf')
+LOG_DIR = '/home/administrador/pi-manager/logs'
+os.makedirs(LOG_DIR, exist_ok=True)
+BROWSER_LOG = os.path.join(LOG_DIR, 'browser-launch.log')
 
 # ========== GERENCIADOR DE FAVORITOS (INLINE) ==========
 class ChromiumFavoritesManager:
@@ -28,6 +87,10 @@ class ChromiumFavoritesManager:
         
         # Usa o diretório de perfil personalizado
         self.chromium_profile_dir = self.home_dir / 'chromium-profile'
+        # Alias consistente usado pelo restante do código
+        self.chromium_dir = self.chromium_profile_dir
+        # Perfil ativo atual
+        self.active_profile = 'Default'
         
         # Define o arquivo de bookmarks no perfil personalizado
         self.bookmarks_file = self.chromium_profile_dir / 'Default' / 'Bookmarks'
@@ -50,79 +113,63 @@ class ChromiumFavoritesManager:
                 for item in os.listdir(self.chromium_profile_dir):
                     item_path = self.chromium_profile_dir / item
                     if item_path.is_dir() and not item.startswith('.') and item != 'bookmarks_backup':
-                        # Verifica se parece ser um perfil (tem Bookmarks ou Preferences)
                         has_bookmarks = (item_path / 'Bookmarks').exists()
                         has_preferences = (item_path / 'Preferences').exists()
-                        
-                        # Só inclui se for um perfil real, não cache
                         if has_bookmarks or has_preferences:
                             profiles.append(item)
-                            print(f"  ✅ Perfil válido: {item}")
                         else:
-                            print(f"  ⚠️ Ignorando diretório de cache: {item}")
+                            # ignorar diretórios de cache
+                            pass
         except Exception as e:
             print(f"Erro ao listar perfis: {e}")
-        
-        # Se não encontrar nenhum, usa Default
+
         if not profiles:
             profiles = ['Default']
-        
+
         print(f"🔍 Perfis encontrados: {profiles}")
         return profiles
-    
+
     def sync_to_all_profiles(self, urls):
-        """Sincroniza favoritos em TODOS os perfis encontrados - VERSÃO CORRIGIDA"""
+        """Sincroniza bookmarks em todos os perfis encontrados"""
         all_success = True
         messages = []
-        
         profiles = self.find_all_profiles()
-        print(f"🔍 Encontrados {len(profiles)} perfis válidos")
-        
         if not profiles:
-            print("⚠️ Nenhum perfil encontrado, usando Default")
             profiles = ['Default']
-        
+
         for profile in profiles:
-            print(f"🔄 Sincronizando perfil: {profile}")
             profile_bookmarks = self.chromium_profile_dir / profile / 'Bookmarks'
-            
-            # Cria diretório se não existir
             profile_bookmarks.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Cria backup
+
             backup_dir = self.chromium_profile_dir / 'bookmarks_backup' / profile
             backup_dir.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             backup_file = backup_dir / f'bookmarks_{timestamp}.bak'
-            
+
             if profile_bookmarks.exists():
                 try:
                     shutil.copy2(profile_bookmarks, backup_file)
                 except Exception as e:
-                    print(f"⚠️ Erro no backup do perfil {profile}: {e}")
-            
-            # Atualiza favoritos neste perfil
+                    messages.append(f"⚠️ Erro no backup do perfil {profile}: {e}")
+                    all_success = False
+
             try:
-                # Salva estrutura de bookmarks
                 bookmarks_data = self.create_bookmarks_structure(urls, "Sites Gerenciados")
-                
                 with open(profile_bookmarks, 'w', encoding='utf-8') as f:
                     json.dump(bookmarks_data, f, indent=2, ensure_ascii=False)
-                
-                # Ajusta permissões
-                uid, gid = self.get_user_ids()
-                os.chown(profile_bookmarks, uid, gid)
-                os.chmod(profile_bookmarks, 0o644)
-                
+
+                try:
+                    uid, gid = self.get_user_ids()
+                    os.chown(profile_bookmarks, uid, gid)
+                    os.chmod(profile_bookmarks, 0o644)
+                except Exception as perm_error:
+                    messages.append(f"⚠️ Aviso de permissões para {profile}: {perm_error}")
+
                 messages.append(f"✅ Perfil {profile}: Sincronizado com {len(urls)} URLs")
-                print(f"✅ Perfil {profile} sincronizado")
-                
             except Exception as e:
-                error_msg = f"❌ Erro em {profile}: {str(e)}"
-                messages.append(error_msg)
-                print(error_msg)
+                messages.append(f"❌ Erro em {profile}: {e}")
                 all_success = False
-        
+
         return all_success, " | ".join(messages)
         
     def get_user_ids(self):
@@ -381,7 +428,9 @@ favorites_manager = ChromiumFavoritesManager()
 
 # ========== FUNÇÕES AUXILIARES ==========
 def check_auth():
-    return session.get('authenticated')
+    auth = session.get('authenticated')
+    print(f"DEBUG check_auth: session={dict(session)}, authenticated={auth}", flush=True)
+    return auth
 
 def get_cpu_usage():
     try:
@@ -491,56 +540,183 @@ def sync_chromium_favorites():
     try:
         urls = load_autostart_urls()
         if not urls:
-            print("ℹ️ Nenhuma URL configurada para sincronizar favoritos")
+            add_event("ℹ️ Nenhuma URL configurada para sincronizar favoritos")
             return False, "Nenhuma URL configurada"
         
         # Formata URLs
         formatted_urls = [format_url(url.strip()) for url in urls if url.strip()]
-        print(f"🔄 URLs para sincronizar: {formatted_urls}")
+        add_event(f"🔄 URLs para sincronizar: {formatted_urls}")
         
         # Sincroniza em TODOS os perfis
         success, message = favorites_manager.sync_to_all_profiles(formatted_urls)
         
         if success:
-            print(f"✅ Favoritos sincronizados em todos os perfis")
+            add_event(f"✅ Favoritos sincronizados em todos os perfis")
         else:
-            print(f"⚠️ Aviso: {message}")
+            add_event(f"⚠️ Aviso: {message}")
         
         return success, message
         
     except Exception as e:
-        print(f"❌ Erro na sincronização de favoritos: {e}")
+        add_event(f"❌ Erro na sincronização de favoritos: {e}")
         return False, str(e)
-    
+
+def cleanup_chromium_locks():
+    """
+    Remove todos os arquivos de lock do Chromium para evitar conflitos de hostname.
+    Deve ser chamada após alterar o hostname e antes de iniciar o browser.
+    """
+    try:
+        add_event("🧹 Iniciando limpeza de locks do Chromium...")
+        
+        profile_dir = '/home/administrador/chromium-profile'
+        default_profile_dir = '/home/administrador/.config/chromium'
+        cache_dir = '/home/administrador/.cache/chromium'
+        
+        # 1. Mata processos do Chromium (força bruta)
+        subprocess.run(['sudo', 'pkill', '-9', '-f', 'chromium'], 
+                      stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        time.sleep(1.5)
+        
+        # 2. Remove locks do perfil personalizado
+        lock_patterns = [
+            'SingletonLock',
+            'SingletonSocket',
+            'SingletonCookie',
+            'SingletonLock-*',
+            'SingletonSocket-*',
+            '.com.google.Chrome*',
+            'SingletonLock.*',
+            'SingletonSocket.*'
+        ]
+        
+        for pattern in lock_patterns:
+            # Remove do diretório raiz do profile
+            subprocess.run([
+                'sudo', '-u', 'administrador',
+                'rm', '-f',
+                f'{profile_dir}/{pattern}'
+            ], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+            
+            # Remove do diretório Default
+            subprocess.run([
+                'sudo', '-u', 'administrador',
+                'rm', '-f',
+                f'{profile_dir}/Default/{pattern}'
+            ], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        
+        # 3. Remove locks do perfil padrão (segurança extra)
+        subprocess.run([
+            'sudo', '-u', 'administrador',
+            'rm', '-f',
+            f'{default_profile_dir}/Singleton*'
+        ], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        
+        # 4. Remove locks do diretório de cache
+        if os.path.exists(cache_dir):
+            subprocess.run([
+                'sudo', '-u', 'administrador',
+                'rm', '-f',
+                f'{cache_dir}/Singleton*'
+            ], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        
+        # 5. Remove arquivos de lock específicos do chromium-profile
+        specific_locks = [
+            f'{profile_dir}/SingletonLock',
+            f'{profile_dir}/SingletonSocket',
+            f'{profile_dir}/Default/SingletonLock',
+            f'{profile_dir}/Default/SingletonSocket'
+        ]
+        
+        for lock_file in specific_locks:
+            if os.path.exists(lock_file):
+                try:
+                    os.remove(lock_file)
+                except:
+                    subprocess.run(['sudo', 'rm', '-f', lock_file], 
+                                 stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        
+        # 6. Verifica se ainda existem locks residuais (agora sem capture_output)
+        try:
+            check = subprocess.run([
+                'sudo', '-u', 'administrador',
+                'find', profile_dir, '-name', "Singleton*", '-o', '-name', ".com.google.Chrome*"
+            ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5)
+            
+            if check.stdout and check.stdout.strip():
+                add_event(f"⚠️ Aviso: locks residuais encontrados: {check.stdout.strip()[:200]}...")
+            else:
+                add_event("✅ Todos os locks do Chromium foram removidos")
+        except:
+            add_event("✅ Verificação de locks concluída")
+            
+        add_event("🧹 Limpeza do Chromium finalizada")
+        return True
+        
+    except Exception as e:
+        add_event(f"❌ Erro ao limpar locks do Chromium: {e}")
+        # Não levanta exceção - apenas loga e continua
+        return False
+
 def open_browser_with_urls():
     """Abre o browser com URLs configuradas e perfil específico"""
     time.sleep(10)  # Aguarda mais tempo para sistema estar pronto
     
     try:
-        # 1. Primeiro garante que os favoritos estão sincronizados
-        print("🔄 Sincronizando favoritos antes de abrir browser...")
-        success, message = sync_chromium_favorites()
-        print(f"📋 Resultado da sincronização: {message}")
+        # 1. SEMPRE limpa locks antes de abrir (garantia)
+        add_event("🧹 Executando limpeza preventiva de locks...")
+        cleanup_chromium_locks()
         
-        # 2. Carrega URLs
+        # 2. Primeiro garante que os favoritos estão sincronizados
+        add_event("🔄 Sincronizando favoritos antes de abrir browser...")
+        success, message = sync_chromium_favorites()
+        add_event(f"📋 Resultado da sincronização: {message}")
+        
+        # 3. Carrega URLs
         urls = load_autostart_urls()
         if not urls:
-            print("ℹ️ Nenhuma URL configurada no autostart.conf")
+            add_event("ℹ️ Nenhuma URL configurada no autostart.conf")
             return
         
-        print(f"🎯 Abrindo {len(urls)} URLs no browser...")
+        add_event(f"🎯 Abrindo {len(urls)} URLs no browser...")
         
-        # 3. Comando para abrir Chromium COM DIRETÓRIO DE PERFIL ESPECÍFICO
+        # 4. Verifica se o display está disponível
+        display_check = subprocess.run(['sudo', '-u', 'administrador', 'env', 'DISPLAY=:0', 'xdpyinfo'],
+                                     stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        if display_check.returncode != 0:
+            add_event("⚠️ Display :0 não está disponível, tentando mesmo assim...")
+        
+        # 5. Comando para abrir Chromium COM FLAGS ANTILOCK
         cmd = [
             'sudo', '-u', 'administrador',
             'env', 'DISPLAY=:0',
-            'chromium',
-            '--user-data-dir=/home/administrador/chromium-profile',  # DIRETÓRIO ESPECÍFICO
+            'chromium-browser' if os.path.exists('/usr/bin/chromium-browser') else 'chromium',
+            '--user-data-dir=/home/administrador/chromium-profile',
             '--no-first-run',
             '--start-maximized',
             '--ignore-certificate-errors',
             '--noerrdialogs',
-            '--disable-session-crashed-bubble'
+            '--disable-session-crashed-bubble',
+            '--disable-single-process',
+            '--disable-features=ChromeWhatsNewUI',
+            '--disable-features=SingleProcess',
+            '--disable-features=ProcessPerSite',
+            '--disable-gpu',
+            '--disable-dbus',
+            '--disable-background-networking',
+            '--disable-sync',
+            '--disable-default-apps',
+            '--disable-extensions',
+            '--disable-component-extensions-with-background-pages',
+            '--disable-client-side-phishing-detection',
+            '--disable-crash-reporter',
+            '--disable-ipc-flooding-protection',
+            '--disable-prompt-on-repost',
+            '--disable-renderer-backgrounding',
+            '--disable-hang-monitor',
+            '--no-sandbox',  # Adicionado para evitar problemas de permissão
+            '--test-type',   # Adicionado para ignorar erros de sandbox
+            '--force-device-scale-factor=1'
         ]
         
         # Adiciona URLs
@@ -549,7 +725,7 @@ def open_browser_with_urls():
                 formatted_url = format_url(url.strip())
                 cmd.append(formatted_url)
         
-        print(f"🚀 Executando com perfil específico: {' '.join(cmd[:10])}...")
+        add_event(f"🚀 Executando Chromium com perfil específico...")
         
         # Executa em background
         process = subprocess.Popen(
@@ -559,119 +735,348 @@ def open_browser_with_urls():
             stdin=subprocess.DEVNULL
         )
         
-        print(f"✅ Browser iniciado com PID {process.pid}")
+        add_event(f"✅ Browser iniciado com PID {process.pid}")
         
         # Verifica se realmente abriu
         time.sleep(3)
-        result = subprocess.run(['pgrep', '-f', 'chromium'], capture_output=True, text=True)
+        result = subprocess.run(['pgrep', '-f', 'chromium'], 
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         if result.stdout.strip():
-            print(f"✅ Chromium está rodando (PIDs: {result.stdout.strip()})")
+            pids = result.stdout.strip().split('\n')
+            add_event(f"✅ Chromium está rodando ({len(pids)} processos)")
         else:
-            print("⚠️ Chromium pode não ter iniciado corretamente")
+            add_event("⚠️ Chromium pode não ter iniciado corretamente")
         
     except Exception as e:
-        print(f"❌ Erro ao abrir browser: {e}")
+        add_event(f"❌ Erro ao abrir browser: {e}")
         import traceback
         traceback.print_exc()
 
-# ========== ROTAS ==========
-@app.route('/')
-def index():
-    if not check_auth():
-        return redirect(url_for('login'))
-    return render_template('index.html')
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        password = request.form.get('password')
-        try:
-            result = subprocess.run(
-                ['sudo', '-k', '-S', 'echo', 'success'],
-                input=password + '\n',
-                text=True,
-                capture_output=True
-            )
-            if result.returncode == 0:
-                session['authenticated'] = True
-                return redirect(url_for('index'))
-            else:
-                return render_template('login.html', error='Senha incorreta')
-        except Exception:
-            return render_template('login.html', error='Erro ao verificar senha')
-    return render_template('login.html')
-
-@app.route('/logout')
-def logout():
-    session.pop('authenticated', None)
-    return redirect(url_for('login'))
-
-@app.route('/network')
-def network():
-    if not check_auth():
-        return redirect(url_for('login'))
-    return render_template('network.html')
-
-@app.route('/system')
-def system():
-    if not check_auth():
-        return redirect(url_for('login'))
-    return render_template('system.html')
-
-@app.route('/autostart')
-def autostart():
-    if not check_auth():
-        return redirect(url_for('login'))
-    return render_template('autostart.html')
-
-# ========== API - SISTEMA ==========
 @app.route('/api/system/info')
 def get_system_info():
+    """Retorna informações detalhadas do sistema"""
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
+    
     try:
-        hostname_result = subprocess.run(['hostname'], capture_output=True, text=True)
-        hostname = hostname_result.stdout.strip() if hostname_result.returncode == 0 else "N/A"
-        model_result = subprocess.run(['cat', '/proc/device-tree/model'], capture_output=True, text=True)
-        model = model_result.stdout.strip() if model_result.returncode == 0 else "Raspberry Pi"
-        uptime_result = subprocess.run(['uptime', '-p'], capture_output=True, text=True)
-        uptime = uptime_result.stdout.strip() if uptime_result.returncode == 0 else "N/A"
-        temp_result = subprocess.run(['cat', '/sys/class/thermal/thermal_zone0/temp'], capture_output=True, text=True)
-        if temp_result.returncode == 0 and temp_result.stdout.strip():
-            temp_c = int(temp_result.stdout.strip()) / 1000.0
-            temperature = f"{temp_c:.1f}°C"
-        else:
-            temperature = "N/A"
+        # Hostname
+        hostname = subprocess.check_output(['hostname'], text=True).strip()
+        
+        # Modelo do Raspberry Pi
+        model = "N/A"
+        try:
+            with open('/proc/device-tree/model', 'r') as f:
+                model = f.read().strip('\x00')
+        except:
+            try:
+                model = subprocess.check_output(['cat', '/sys/firmware/devicetree/base/model'], 
+                                              text=True).strip('\x00')
+            except:
+                model = "Raspberry PI"
+        
+        # Uptime
+        uptime = "N/A"
+        try:
+            with open('/proc/uptime', 'r') as f:
+                uptime_seconds = float(f.read().split()[0])
+                days = int(uptime_seconds // 86400)
+                hours = int((uptime_seconds % 86400) // 3600)
+                minutes = int((uptime_seconds % 3600) // 60)
+                
+                if days > 0:
+                    uptime = f"{days}d {hours}h {minutes}m"
+                elif hours > 0:
+                    uptime = f"{hours}h {minutes}m"
+                else:
+                    uptime = f"{minutes}m"
+        except Exception as e:
+            print(f"Erro ao obter uptime: {e}")
+        
+        # Temperatura
+        temperature = "N/A"
+        try:
+            temp_output = subprocess.check_output(['vcgencmd', 'measure_temp'], 
+                                                 text=True).strip()
+            temp_match = re.search(r'(\d+\.?\d*)', temp_output)
+            if temp_match:
+                temperature = f"{temp_match.group(1)}°C"
+        except:
+            try:
+                with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
+                    temp_raw = int(f.read().strip())
+                    temperature = f"{temp_raw / 1000:.1f}°C"
+            except:
+                pass
+        
+        # CPU Usage
         cpu_usage = get_cpu_usage()
+        
+        # Memory Usage
         memory_usage = get_memory_usage()
+        
+        # Versão do Sistema
+        os_version = "N/A"
+        try:
+            with open('/etc/os-release', 'r') as f:
+                for line in f:
+                    if line.startswith('PRETTY_NAME='):
+                        os_version = line.split('=')[1].strip('"\'')
+                        break
+        except:
+            pass
+        
+        # Versão do Kernel
+        kernel = subprocess.check_output(['uname', '-r'], text=True).strip()
+        
         return jsonify({
             'hostname': hostname,
             'model': model,
             'uptime': uptime,
             'temperature': temperature,
             'cpu_usage': cpu_usage,
-            'memory_usage': memory_usage
+            'memory_usage': memory_usage,
+            'os_version': os_version,
+            'kernel': kernel
         })
+        
+    except Exception as e:
+        print(f"Erro ao obter informações do sistema: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/system/events')
+def get_system_events():
+    """Retorna os eventos recentes do servidor (in-memory)"""
+    if not check_auth():
+        return jsonify({'error': 'Não autenticado'}), 401
+    try:
+        return jsonify({'events': list(EVENT_LOG)})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/system/hostname', methods=['POST'])
-def change_hostname():
+
+@app.route('/api/network/connection/<name>', methods=['GET'])
+def get_connection_detail(name):
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
-    data = request.json
-    new_hostname = data.get('hostname')
     try:
-        if not new_hostname or len(new_hostname) < 2:
-            return jsonify({'error': 'Hostname deve ter pelo menos 2 caracteres'}), 400
-        if not re.match(r'^[a-zA-Z0-9-]{1,63}$', new_hostname):
-            return jsonify({'error': 'Hostname inválido. Use apenas letras, números e hífens'}), 400
-        subprocess.run(['sudo', 'hostnamectl', 'set-hostname', new_hostname], capture_output=True, text=True)
-        subprocess.run(['sudo', 'sed', '-i', f's/.*/{new_hostname}/', '/etc/hostname'], capture_output=True, text=True)
-        subprocess.run(['sudo', 'sed', '-i', f's/127.0.1.1.*/127.0.1.1\\t{new_hostname}/', '/etc/hosts'], capture_output=True, text=True)
-        return jsonify({'success': True, 'message': 'Hostname alterado com sucesso. Reinicie o sistema para aplicar completamente.'})
+        # Get connection properties
+        result = run_nmcli(['-t', '-f', 'all', 'connection', 'show', name])
+        if result.returncode != 0:
+            stderr = (result.stderr or '').strip()
+            return jsonify({'error': f'Conexão não encontrada'}), 404
+        
+        props = {}
+        for line in result.stdout.strip().split('\n'):
+            if not line or ':' not in line:
+                continue
+            k, v = line.split(':', 1)
+            props[k.strip()] = v.strip()
+        
+        # Get device name from connection
+        device = props.get('connection.interface-name', '')
+        
+        # Get current IP if connection is active
+        ip4 = ''
+        if device:
+            ip_result = run_nmcli(['-t', '-f', 'IP4.ADDRESS', 'dev', 'show', device], capture_output=True)
+            if ip_result.returncode == 0:
+                for line in ip_result.stdout.strip().split('\n'):
+                    if line and ':' in line:
+                        _, ip = line.split(':', 1)
+                        ip = ip.strip()
+                        if ip:
+                            ip4 = ip.split('/')[0]
+                            break
+        
+        # Parse connection data in a structured way
+        conn_data = {
+            'name': name,
+            'type': props.get('connection.type', 'ethernet'),
+            'device': device,
+            'ip_type': 'dhcp' if props.get('ipv4.method') == 'auto' else 'static',
+            'ip_address': props.get('ipv4.addresses', ''),
+            'gateway': props.get('ipv4.gateway', ''),
+            'dns': props.get('ipv4.dns', ''),
+            'ssid': props.get('802-11-wireless.ssid', ''),
+            'ip4': ip4
+        }
+        
+        return jsonify({'success': True, **conn_data})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/network/connection/<name>', methods=['POST'])
+def update_connection(name):
+    if not check_auth():
+        return jsonify({'error': 'Não autenticado'}), 401
+    data = request.json or {}
+    try:
+        connection_type = data.get('type', '')
+        ip_type = data.get('ip_type')
+        
+        # Se type='ip_only', apenas alterar as configurações de IP (modo edição)
+        if connection_type == 'ip_only':
+            if ip_type == 'dhcp':
+                args = ['connection', 'modify', name, 'ipv4.method', 'auto']
+                res = run_nmcli(args)
+            elif ip_type == 'static':
+                ip_address = data.get('ip_address', '') or ''
+                gateway = data.get('gateway', '') or ''
+                dns = data.get('dns', '') or ''
+                
+                if not ip_address:
+                    return jsonify({'error': 'Endereço IP é obrigatório'}), 400
+                
+                args = ['connection', 'modify', name, 'ipv4.method', 'manual', 'ipv4.addresses', ip_address]
+                if gateway:
+                    args.extend(['ipv4.gateway', gateway])
+                if dns:
+                    # Convert comma-separated to space-separated for nmcli
+                    dns_list = dns.replace(',', ' ')
+                    args.extend(['ipv4.dns', dns_list])
+                res = run_nmcli(args)
+            else:
+                return jsonify({'error': 'ip_type inválido'}), 400
+
+            if res.returncode != 0:
+                stderr = (res.stderr or '').strip()
+                return jsonify({'error': f'nmcli error: {stderr}'}), 500
+
+            # Try to reactivate the connection with new settings
+            run_nmcli(['connection', 'down', name], capture_output=True)
+            time.sleep(0.5)
+            run_nmcli(['connection', 'up', name], capture_output=True)
+            return jsonify({'success': True, 'message': 'Configuração IP atualizada com sucesso'})
+        
+        # Modo legado (não deve ser usado em edição segura)
+        if ip_type == 'dhcp':
+            args = ['connection', 'modify', name, 'ipv4.method', 'auto']
+            res = run_nmcli(args)
+        elif ip_type == 'static':
+            ip_address = data.get('ip_address') or ''
+            gateway = data.get('gateway') or ''
+            dns = data.get('dns') or ''
+            args = ['connection', 'modify', name, 'ipv4.method', 'manual', 'ipv4.addresses', ip_address]
+            if gateway:
+                args.extend(['ipv4.gateway', gateway])
+            if dns:
+                args.extend(['ipv4.dns', dns])
+            res = run_nmcli(args)
+        else:
+            return jsonify({'error': 'ip_type inválido'}), 400
+
+        if res.returncode != 0:
+            stderr = (res.stderr or '').strip()
+            return jsonify({'error': f'nmcli error: {stderr}'}), 500
+
+        # Try to bring the connection up
+        run_nmcli(['connection', 'down', name], capture_output=True)
+        time.sleep(0.5)
+        run_nmcli(['connection', 'up', name], capture_output=True)
+        return jsonify({'success': True, 'message': 'Conexão atualizada com sucesso'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/network/connection/<name>', methods=['DELETE'])
+def delete_connection_api(name):
+    if not check_auth():
+        return jsonify({'error': 'Não autenticado'}), 401
+    try:
+        res = run_nmcli(['connection', 'delete', name])
+        if res.returncode != 0:
+            stderr = (res.stderr or '').strip()
+            return jsonify({'error': f'nmcli error: {stderr}'}), 500
+        return jsonify({'success': True, 'message': 'Conexão deletada'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/network/connection/<name>/test', methods=['POST'])
+def test_connection_api(name):
+    if not check_auth():
+        return jsonify({'error': 'Não autenticado'}), 401
+    try:
+        res = run_nmcli(['connection', 'up', name])
+        if res.returncode != 0:
+            stderr = (res.stderr or '').strip()
+            return jsonify({'error': f'nmcli error: {stderr}'}), 500
+        return jsonify({'success': True, 'message': 'Conexão ativada com sucesso'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ========== /api/system/hostname ==========
+@app.route('/api/system/hostname', methods=['POST'])
+def change_hostname():
+    """Altera o hostname do sistema e limpa os locks do Chromium"""
+    if not check_auth():
+        return jsonify({'error': 'Não autenticado'}), 401
+    
+    data = request.json
+    new_hostname = data.get('hostname')
+    
+    try:
+        # Validação do hostname
+        if not new_hostname or len(new_hostname) < 2:
+            return jsonify({'error': 'Hostname deve ter pelo menos 2 caracteres'}), 400
+        
+        if len(new_hostname) > 63:
+            return jsonify({'error': 'Hostname deve ter no máximo 63 caracteres'}), 400
+        
+        if not re.match(r'^[a-zA-Z0-9-]+$', new_hostname):
+            return jsonify({'error': 'Hostname inválido. Use apenas letras, números e hífens'}), 400
+        
+        if new_hostname.startswith('-') or new_hostname.endswith('-'):
+            return jsonify({'error': 'Hostname não pode começar ou terminar com hífen'}), 400
+        
+        add_event(f"🔄 Alterando hostname para: {new_hostname}")
+        
+        # Usa o wrapper seguro para aplicar hostname persistente
+        result = run_hostname(new_hostname)
+        
+        if result.returncode == 0:
+            # ✅ SUCESSO: Agora limpa os locks do Chromium
+            add_event(f"✅ Hostname alterado para {new_hostname}. Iniciando limpeza do Chromium...")
+            
+            # Mata o Chromium se estiver rodando
+            try:
+                subprocess.run(['sudo', 'pkill', '-f', 'chromium'], 
+                             stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+                time.sleep(1)
+            except:
+                pass
+            
+            # Limpa todos os locks
+            cleanup_success = cleanup_chromium_locks()
+            
+            if cleanup_success:
+                add_event(f"✅ Hostname alterado e Chromium limpo com sucesso")
+                return jsonify({
+                    'success': True, 
+                    'message': 'Hostname alterado com sucesso. Chromium foi reiniciado e locks limpos.'
+                })
+            else:
+                add_event(f"⚠️ Hostname alterado mas houve problemas na limpeza do Chromium")
+                return jsonify({
+                    'success': True, 
+                    'warning': True,
+                    'message': 'Hostname alterado, mas houve avisos na limpeza do Chromium. O browser pode precisar ser reiniciado manualmente.'
+                })
+        else:
+            stderr = (result.stderr or '').strip()
+            error_msg = f"Falha ao alterar hostname: {stderr}" if stderr else "Falha ao alterar hostname (código de erro desconhecido)"
+            add_event(f"❌ {error_msg}")
+            return jsonify({'error': error_msg}), 500
+            
+    except subprocess.TimeoutExpired:
+        add_event(f"❌ Timeout ao alterar hostname")
+        return jsonify({'error': 'Timeout ao executar comando'}), 500
+    except Exception as e:
+        add_event(f"❌ Erro ao alterar hostname: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+    
+
 
 @app.route('/api/system/password', methods=['POST'])
 def change_password():
@@ -682,7 +1087,7 @@ def change_password():
     try:
         if not new_password or len(new_password) < 3:
             return jsonify({'error': 'Senha deve ter pelo menos 3 caracteres'}), 400
-        result = subprocess.run(['sudo', 'chpasswd'], input=f'administrador:{new_password}', text=True, capture_output=True)
+        result = run_chpasswd('administrador', new_password)
         if result.returncode == 0:
             return jsonify({'success': True, 'message': 'Senha alterada com sucesso'})
         else:
@@ -736,28 +1141,87 @@ def get_network_info():
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
     try:
-        result = subprocess.run(['sudo', 'nmcli', '-t', '-f', 'NAME,DEVICE,TYPE,STATE', 'con', 'show', '--active'], capture_output=True, text=True)
+        # Get ALL connections (not just active ones)
+        # Using both the NAME:DEVICE and connection details
+        result = run_nmcli(['-t', '-f', 'NAME,DEVICE,TYPE,ACTIVE,STATE', 'con', 'show'])
+        if result.returncode != 0:
+            stderr = (result.stderr or '').strip()
+            return jsonify({'error': f'nmcli error: {stderr}'}), 500
         connections = []
+        connection_details = {}
+        
         for line in result.stdout.strip().split('\n'):
             if line:
                 parts = line.split(':')
-                if len(parts) >= 4:
-                    name, device, con_type, state = parts[:4]
-                    connections.append({'name': name, 'device': device, 'type': con_type, 'state': state})
-        ip_result = subprocess.run(['sudo', 'nmcli', '-t', '-f', 'IP4,IP6,DEVICE', 'dev', 'show'], capture_output=True, text=True)
-        devices = []; current_device = {}
-        for line in ip_result.stdout.strip().split('\n'):
-            if line:
-                if line.startswith('IP4'):
-                    ip_info = line.split(':',1)[1]
-                    if '[' in ip_info:
-                        current_device['ip4'] = ip_info.split('/')[0]
-                elif line.startswith('DEVICE'):
-                    if current_device:
-                        devices.append(current_device)
-                    current_device = {'device': line.split(':',1)[1]}
-        if current_device:
-            devices.append(current_device)
+                # Handle variable number of parts (some may be empty)
+                name = parts[0] if len(parts) > 0 else ''
+                device = parts[1] if len(parts) > 1 else ''
+                con_type = parts[2] if len(parts) > 2 else 'ethernet'
+                active = parts[3] if len(parts) > 3 else 'no'
+                state = parts[4] if len(parts) > 4 else ''
+                
+                # Skip loopback connections
+                if con_type == 'loopback':
+                    continue
+                
+                # If device is empty, try to get it from connection.interface-name
+                if not device:
+                    detail_result = run_nmcli(['-t', '-f', 'connection.interface-name', 'connection', 'show', name], capture_output=True)
+                    if detail_result.returncode == 0 and detail_result.stdout.strip():
+                        device = detail_result.stdout.strip().split(':')[1].strip() if ':' in detail_result.stdout.strip() else ''
+                
+                # Determine the state: "ativado" if active, "desativado" if not
+                connection_state = 'ativado' if active.strip().lower() == 'yes' else 'desativado'
+                connections.append({
+                    'name': name.strip(), 
+                    'device': device.strip(), 
+                    'type': con_type.strip(), 
+                    'state': connection_state,
+                    'active': active.strip()
+                })
+        # Use fields supported by nmcli for device/general info and IP addresses
+        ip_result = run_nmcli(['-t', '-f', 'GENERAL.DEVICE,IP4.ADDRESS,IP6.ADDRESS', 'dev', 'show'])
+        
+        # Build device->IP mapping
+        device_ips = {}
+        if ip_result.returncode == 0:
+            current_device = None
+            for line in ip_result.stdout.strip().split('\n'):
+                if not line or ':' not in line:
+                    continue
+                key, val = line.split(':', 1)
+                key = key.strip(); val = val.strip()
+                if key.startswith('GENERAL.DEVICE'):
+                    current_device = val
+                    device_ips[current_device] = {}
+                elif key.startswith('IP4.ADDRESS') and current_device:
+                    if val and not device_ips[current_device].get('ip4'):
+                        # Take only the first IP if multiple
+                        device_ips[current_device]['ip4'] = val.split('/')[0] if val else ''
+                elif key.startswith('IP6.ADDRESS') and current_device:
+                    if val and not device_ips[current_device].get('ip6'):
+                        # Take only the first IP if multiple
+                        device_ips[current_device]['ip6'] = val.split('/')[0] if val else ''
+        
+        # Add IP information to each connection
+        for conn in connections:
+            device = conn.get('device', '')
+            if device in device_ips:
+                conn['ip4'] = device_ips[device].get('ip4', '')
+                conn['ip6'] = device_ips[device].get('ip6', '')
+            else:
+                conn['ip4'] = ''
+                conn['ip6'] = ''
+        
+        # Also prepare devices list for backward compatibility
+        devices = []
+        for device, ips in device_ips.items():
+            dev_info = {'device': device}
+            if ips.get('ip4'):
+                dev_info['ip4'] = ips['ip4']
+            if ips.get('ip6'):
+                dev_info['ip6'] = ips['ip6']
+            devices.append(dev_info)
         return jsonify({'connections': connections, 'devices': devices})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -767,7 +1231,10 @@ def scan_wifi():
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
     try:
-        result = subprocess.run(['sudo', 'nmcli', '-t', '-f', 'SSID,SIGNAL,SECURITY', 'dev', 'wifi', 'list'], capture_output=True, text=True)
+        result = run_nmcli(['-t', '-f', 'SSID,SIGNAL,SECURITY', 'dev', 'wifi', 'list'])
+        if result.returncode != 0:
+            stderr = (result.stderr or '').strip()
+            return jsonify({'error': f'nmcli error: {stderr}'}), 500
         networks = []
         for line in result.stdout.strip().split('\n'):
             if line:
@@ -786,41 +1253,102 @@ def configure_network():
     data = request.json
     connection_type = data.get('type')
     connection_name = data.get('name')
+    ip_type = data.get('ip_type', 'dhcp')
+    
     try:
-        if connection_type == 'wifi':
-            ssid = data.get('ssid'); password = data.get('password')
-            cmd = ['sudo', 'nmcli', 'dev', 'wifi', 'connect', ssid]
-            if password: cmd.extend(['password', password])
-            if connection_name: cmd.extend(['name', connection_name])
-            result = subprocess.run(cmd, capture_output=True, text=True)
-        elif connection_type == 'ethernet':
-            if connection_name:
-                cmd = ['sudo', 'nmcli', 'con', 'add', 'type', 'ethernet', 'con-name', connection_name, 'ifname', 'eth0']
-            else:
-                cmd = ['sudo', 'nmcli', 'con', 'add', 'type', 'ethernet', 'ifname', 'eth0']
-            result = subprocess.run(cmd, capture_output=True, text=True)
-        elif connection_type == 'static':
-            ip_address = data.get('ip_address'); gateway = data.get('gateway'); dns = data.get('dns')
-            cmd = [
-                'sudo', 'nmcli', 'con', 'modify', connection_name,
-                'ipv4.addresses', ip_address,
-                'ipv4.gateway', gateway,
-                'ipv4.dns', dns,
-                'ipv4.method', 'manual'
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-        elif connection_type == 'toggle':
+        # Handle toggle (ativar/desativar)
+        if connection_type == 'toggle':
             action = data.get('action', 'up')
-            result = subprocess.run(['sudo', 'nmcli', 'con', action, connection_name], capture_output=True, text=True)
+            result = run_nmcli(['connection', action, connection_name])
+            if result.returncode == 0:
+                return jsonify({'success': True, 'message': f'Conexão {action}da com sucesso'})
+            else:
+                stderr = (result.stderr or '').strip()
+                return jsonify({'error': f'Erro: {stderr}'}), 500
+        
+        if connection_type == 'wifi':
+            ssid = data.get('ssid')
+            password = data.get('password', '')
+            
+            if not ssid:
+                return jsonify({'error': 'SSID é obrigatório'}), 400
+            
+            # Create or modify Wi-Fi connection
+            # First, check if connection exists
+            check_result = run_nmcli(['connection', 'show', connection_name], capture_output=True)
+            
+            if check_result.returncode == 0:
+                # Connection exists, modify it
+                args = ['connection', 'modify', connection_name, 
+                        '802-11-wireless.ssid', ssid]
+                if password:
+                    args.extend(['802-11-wireless-security.psk', password])
+                result = run_nmcli(args)
+            else:
+                # Create new connection
+                args = ['connection', 'add', 'type', 'wifi', 'ifname', 'wlan0',
+                        'con-name', connection_name,
+                        '802-11-wireless.ssid', ssid]
+                if password:
+                    args.extend(['802-11-wireless-security.key-mgmt', 'wpa-psk',
+                               '802-11-wireless-security.psk', password])
+                result = run_nmcli(args)
+        
+        elif connection_type == 'ethernet':
+            device = data.get('device', 'eth0')
+            
+            # Check if connection exists
+            check_result = run_nmcli(['connection', 'show', connection_name], capture_output=True)
+            
+            if check_result.returncode == 0:
+                # Connection exists, just modify IP settings
+                result = run_nmcli(['connection', 'modify', connection_name])
+            else:
+                # Create new connection
+                result = run_nmcli(['connection', 'add', 'type', 'ethernet', 
+                                   'ifname', device, 'con-name', connection_name])
+        
+        if result.returncode != 0:
+            stderr = (result.stderr or '').strip()
+            return jsonify({'error': f'Erro: {stderr}'}), 500
+        
+        # Configure IP settings
+        if ip_type == 'static':
+            ip_address = data.get('ip_address', '')
+            gateway = data.get('gateway', '')
+            dns = data.get('dns', '')
+            
+            if not ip_address:
+                return jsonify({'error': 'Endereço IP é obrigatório'}), 400
+            
+            args = ['connection', 'modify', connection_name, 
+                   'ipv4.method', 'manual',
+                   'ipv4.addresses', ip_address]
+            
+            if gateway:
+                args.extend(['ipv4.gateway', gateway])
+            if dns:
+                args.extend(['ipv4.dns', dns.replace(',', ' ')])
+            
+            result = run_nmcli(args)
+            if result.returncode != 0:
+                stderr = (result.stderr or '').strip()
+                return jsonify({'error': f'Erro ao configurar IP: {stderr}'}), 500
         else:
-            return jsonify({'error': 'Tipo de configuração inválido'}), 400
-        if result.returncode == 0:
-            if connection_name and connection_type in ('ethernet', 'static'):
-                subprocess.run(['sudo', 'nmcli', 'con', 'down', connection_name], capture_output=True)
-                subprocess.run(['sudo', 'nmcli', 'con', 'up', connection_name], capture_output=True)
-            return jsonify({'success': True, 'message': 'Rede configurada com sucesso'})
-        else:
-            return jsonify({'error': result.stderr}), 500
+            # DHCP
+            result = run_nmcli(['connection', 'modify', connection_name, 
+                              'ipv4.method', 'auto'])
+            if result.returncode != 0:
+                stderr = (result.stderr or '').strip()
+                return jsonify({'error': f'Erro ao configurar DHCP: {stderr}'}), 500
+        
+        # Try to activate connection
+        run_nmcli(['connection', 'down', connection_name], capture_output=True)
+        time.sleep(0.5)
+        run_nmcli(['connection', 'up', connection_name], capture_output=True)
+        
+        return jsonify({'success': True, 'message': 'Conexão configurada com sucesso'})
+    
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -1106,19 +1634,52 @@ def test_favorites():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# ========== API - SISTEMA (MODIFICADA) ==========
-@app.route('/api/system/restart-browser', methods=['POST'])
-def restart_browser():
+# ========== LOGO APÓS /api/system/events, ADICIONE ISSO ==========
+
+
+    
+# ========== ENDPOINT PARA LIMPEZA MANUAL ==========
+@app.route('/api/system/cleanup-chromium', methods=['POST'])
+def manual_cleanup_chromium():
+    """Endpoint para limpeza manual dos locks do Chromium"""
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
     
     try:
+        add_event("🧹 Limpeza manual de locks do Chromium solicitada")
+        success = cleanup_chromium_locks()
+        if success:
+            add_event("✅ Limpeza manual de locks concluída com sucesso")
+            return jsonify({
+                'success': True,
+                'message': 'Locks do Chromium limpos com sucesso'
+            })
+        else:
+            add_event("⚠️ Limpeza manual de locks concluída com avisos")
+            return jsonify({
+                'success': True,
+                'warning': True,
+                'message': 'Locks limpos, mas alguns arquivos podem não ter sido removidos'
+            })
+    except Exception as e:
+        add_event(f"❌ Erro na limpeza manual de locks: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+# ========== API - SISTEMA (MODIFICADA) ==========
+@app.route('/api/system/restart-browser', methods=['POST'])
+def restart_browser():
+    """Reinicia o Chromium com limpeza prévia de locks"""
+    if not check_auth():
+        return jsonify({'error': 'Não autenticado'}), 401
+    
+    try:
+        add_event("🔄 Reiniciando browser...")
+        
         # 1. Sincroniza favoritos primeiro
         sync_chromium_favorites()
         
-        # 2. Mata processo do Chromium
-        subprocess.run(['sudo', 'pkill', '-f', 'chromium'], capture_output=True)
-        time.sleep(2)
+        # 2. Limpa todos os locks
+        cleanup_chromium_locks()
         
         # 3. Reabre com perfil específico
         urls = load_autostart_urls()
@@ -1127,21 +1688,32 @@ def restart_browser():
                 'sudo', '-u', 'administrador',
                 'env', 'DISPLAY=:0',
                 'chromium',
-                '--user-data-dir=/home/administrador/chromium-profile',  # DIRETÓRIO ESPECÍFICO
+                '--user-data-dir=/home/administrador/chromium-profile',
                 '--ignore-certificate-errors',
                 '--start-maximized',
                 '--no-first-run',
                 '--disable-dbus',
                 '--noerrdialogs',
-                '--disable-infobars'
+                '--disable-infobars',
+                '--disable-single-process',
+                '--disable-features=SingleProcess'
             ]
             formatted_urls = [format_url(url) for url in urls if url.strip()]
             cmd.extend(formatted_urls)
             subprocess.Popen(cmd)
-            return jsonify({'success': True, 'message': 'Browser reiniciado com perfil específico e favoritos sincronizados'})
+            add_event("✅ Browser reiniciado com perfil específico e locks limpos")
+            return jsonify({
+                'success': True, 
+                'message': 'Browser reiniciado com locks limpos e favoritos sincronizados'
+            })
         else:
-            return jsonify({'success': True, 'message': 'Browser fechado (nenhuma URL configurada)'})
+            add_event("✅ Browser fechado (nenhuma URL configurada)")
+            return jsonify({
+                'success': True, 
+                'message': 'Browser fechado (nenhuma URL configurada)'
+            })
     except Exception as e:
+        add_event(f"❌ Erro ao reiniciar browser: {e}")
         return jsonify({'error': str(e)}), 500
 
 # ========== DIAGNÓSTICO ==========
@@ -1174,6 +1746,107 @@ def diagnostic_browser():
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/diagnostic/wrappers', methods=['GET'])
+def diagnostic_wrappers():
+    """Relata existência, permissões e tentativa de execução via sudo -n dos wrappers"""
+    if not check_auth():
+        return jsonify({'error': 'Não autenticado'}), 401
+
+    wrappers = [NMCLI_WRAPPER, CHPASS_WRAPPER, HOSTNAME_WRAPPER]
+    info = {}
+    for w in wrappers:
+        item = {
+            'path': w,
+            'exists': os.path.exists(w),
+            'is_file': os.path.isfile(w),
+            'is_executable': os.access(w, os.X_OK)
+        }
+        try:
+            st = os.stat(w)
+            item.update({'uid': st.st_uid, 'gid': st.st_gid, 'mode': oct(st.st_mode & 0o777)})
+        except Exception as e:
+            item['stat_error'] = str(e)
+
+        # Tenta executar via sudo sem prompt (-n) para verificar se sudoers permite
+        try:
+            proc = subprocess.run(['sudo', '-n', w, '--version'], capture_output=True, text=True, timeout=5)
+            item['sudo_returncode'] = proc.returncode
+            item['sudo_stdout'] = proc.stdout.strip()
+            item['sudo_stderr'] = proc.stderr.strip()
+        except Exception as e:
+            item['sudo_error'] = str(e)
+
+        info[w] = item
+
+    info['nmcli_exists'] = shutil.which('nmcli') is not None
+    return jsonify({'success': True, 'wrappers': info})
+
+
+@app.route('/api/diagnostic/session', methods=['GET'])
+def diagnostic_session():
+    """Debug endpoint: mostra o conteúdo da sessão e cookies recebidos (apenas local)."""
+    try:
+        sess = dict(session)
+        cookies = {k: v for k, v in request.cookies.items()}
+        return jsonify({'success': True, 'session': sess, 'cookies': cookies})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ========== PÁGINAS WEB (ROTAS SIMPLES) ==========
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Rota de login simples. Usa `ADMIN_PASSWORD` no ambiente ou 'admin' por padrão."""
+    if request.method == 'POST':
+        # aceita formulário ou JSON
+        password = request.form.get('password') if request.form else None
+        if not password and request.is_json:
+            password = (request.get_json() or {}).get('password')
+
+        # Por padrão, use a senha esperada para o usuário 'administrador'
+        admin_pass = os.environ.get('ADMIN_PASSWORD', 'sil123')
+        if password and password == admin_pass:
+            session['authenticated'] = True
+            return redirect(url_for('index'))
+        # mostrar página com erro
+        return render_template('login.html', error='Senha inválida')
+    return render_template('login.html')
+
+
+@app.route('/logout')
+def logout():
+    session.pop('authenticated', None)
+    return redirect(url_for('login'))
+
+
+@app.route('/')
+def index():
+    if not check_auth():
+        return redirect(url_for('login'))
+    return render_template('index.html')
+
+
+@app.route('/network', endpoint='network')
+def network_page():
+    if not check_auth():
+        return redirect(url_for('login'))
+    return render_template('network.html')
+
+
+@app.route('/system', endpoint='system')
+def system_page():
+    if not check_auth():
+        return redirect(url_for('login'))
+    return render_template('system.html')
+
+
+@app.route('/autostart', endpoint='autostart')
+def autostart_page():
+    if not check_auth():
+        return redirect(url_for('login'))
+    return render_template('autostart.html')
+
 
 # ========== INICIALIZAÇÃO ==========
 def startup_tasks():
@@ -1214,6 +1887,53 @@ def startup_tasks():
 
 with app.app_context():
     startup_tasks()
+
+
+@app.route('/about')
+def about():
+    return render_template('about.html')
+
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Endpoint to receive GitHub webhook and trigger update script.
+
+    Expects header 'X-Hub-Signature-256: sha256=...' and secret in env WEBHOOK_SECRET.
+    """
+    secret = os.environ.get('WEBHOOK_SECRET')
+    if not secret:
+        add_event('Webhook called but WEBHOOK_SECRET not set')
+        return 'Server misconfigured', 500
+
+    signature = request.headers.get('X-Hub-Signature-256', '')
+    body = request.get_data()
+
+    mac = hmac.new(secret.encode(), msg=body, digestmod=hashlib.sha256)
+    expected = f'sha256={mac.hexdigest()}'
+
+    if not hmac.compare_digest(expected, signature):
+        add_event('Webhook signature mismatch')
+        return 'Unauthorized', 401
+
+    # Run update script in background so we respond quickly
+    def run_update():
+        try:
+            repo_root = os.path.abspath(os.path.join(app.root_path, '..'))
+            script_path = os.path.join(repo_root, 'update_app.sh')
+            add_event('Webhook validated — running update script')
+            # Use bash to run even if file is not executable
+            proc = subprocess.run(['/bin/bash', script_path], capture_output=True, text=True, timeout=600)
+            add_event(f'Update stdout: {proc.stdout[:1000]}')
+            if proc.stderr:
+                add_event(f'Update stderr: {proc.stderr[:1000]}')
+        except Exception as e:
+            add_event(f'Error running update: {e}')
+
+    t = threading.Thread(target=run_update)
+    t.daemon = True
+    t.start()
+
+    return 'OK', 200
 
 if __name__ == '__main__':
     debug_mode = os.environ.get('DEBUG', 'False').lower() == 'true'

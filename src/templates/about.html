@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sobre - Gerenciador PI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .about-card {
+            max-width: 900px;
+            margin: 2rem auto;
+            padding: 1.5rem;
+        }
+        .about-list { margin-top: 1rem; }
+        .about-list li { margin-bottom: 0.5rem; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="site-brand">
+            <img src="{{ url_for('static', filename='imgs/logo.png') }}" alt="Logo" class="logo-img">
+            <h1 class="brand-title">Sobre o Aplicativo</h1>
+        </div>
+        <a href="{{ url_for('index') }}" class="btn">Voltar</a>
+    </div>
+    <div class="nav">
+        <ul>
+            <li><a href="{{ url_for('index') }}">Dashboard</a></li>
+            <li><a href="{{ url_for('network') }}">Rede</a></li>
+            <li><a href="{{ url_for('system') }}">Sistema</a></li>
+            <li><a href="{{ url_for('autostart') }}">Autostart</a></li>
+            <li><a href="{{ url_for('about') }}" class="active">Sobre</a></li>
+            <li><a href="{{ url_for('logout') }}">Sair</a></li>
+        </ul>
+    </div>
+
+    <div class="main-content">
+        <div class="card about-card">
+            <h2>Informações</h2>
+            <p>Este aplicativo foi desenvolvido para facilitar o gerenciamento de um Raspberry Pi: monitoramento, rede, autostart e tarefas de sistema.</p>
+            <h3>Créditos</h3>
+            <ul class="about-list">
+                <li>Desenvolvido por: <strong>@victorjoaonull</strong> (GitHub)</li>
+                <li>Repositório: <a href="https://github.com/victorjoaonull" target="_blank">https://github.com/victorjoaonull</a></li>
+            </ul>
+            <h3>Licença</h3>
+            <p>Consulte o repositório para informações sobre licença e contribuições.</p>
+        </div>
+    </div>
+</body>
+</html>
