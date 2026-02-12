@@ -72,7 +72,10 @@ fi
 INSTALL_DIR="/home/administrador/raspberry-pi-manager"
 VENV_DIR="$INSTALL_DIR/venv"
 SERVICE_NAME="raspberry-pi-manager"
-REPO_DIR="$(pwd)"
+# Use the script's directory as the repository directory (handles being
+# invoked from another cwd). Works in bash and when sourced via absolute
+# or relative path.
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GIT_REPO="${GIT_REPO:-https://github.com/victorjoaonull/raspberry-pi-manager.git}"
 WEBHOOK_SECRET="${WEBHOOK_SECRET:-}" # Use env var or leave empty; user should set in /etc/default/$SERVICE_NAME
 
@@ -97,12 +100,38 @@ if [ "$CLONE_FROM_GITHUB" = "true" ]; then
     sudo -u administrador git clone "$GIT_REPO" "$INSTALL_DIR"
 else
     echo "Copiando arquivos do diretório local: $REPO_DIR"
-    cp -r "$REPO_DIR/src/"* "$INSTALL_DIR/"
+    # Suporta projetos que colocam os arquivos diretamente no repositório
+    # ou dentro de um subdiretório `src/`.
+    if [ -d "$REPO_DIR/src" ]; then
+        SRC_DIR="$REPO_DIR/src"
+    else
+        SRC_DIR="$REPO_DIR"
+    fi
+    echo "  Fonte: $SRC_DIR"
+    # Use rsync se disponível (mais robusto), fallback para cp com nullglob
+    if command -v rsync >/dev/null 2>&1; then
+        sudo -u administrador rsync -a --exclude='.git' "$SRC_DIR/" "$INSTALL_DIR/"
+    else
+        # Evita erro com globs que não casam (set -e presente)
+        shopt -s nullglob
+        FILES=( "$SRC_DIR/"* )
+        if [ ${#FILES[@]} -gt 0 ]; then
+            sudo -u administrador cp -r "${FILES[@]}" "$INSTALL_DIR/"
+        fi
+        shopt -u nullglob
+    fi
+
+    # Copy possible auxiliary files: prefer repository root, fallback to SRC_DIR
     if [ -f "$REPO_DIR/requirements.txt" ]; then
         cp "$REPO_DIR/requirements.txt" "$INSTALL_DIR/"
+    elif [ -f "$SRC_DIR/requirements.txt" ]; then
+        cp "$SRC_DIR/requirements.txt" "$INSTALL_DIR/"
     fi
+
     if [ -f "$REPO_DIR/update_app.sh" ]; then
         cp "$REPO_DIR/update_app.sh" "$INSTALL_DIR/"
+    elif [ -f "$SRC_DIR/update_app.sh" ]; then
+        cp "$SRC_DIR/update_app.sh" "$INSTALL_DIR/"
     fi
 fi
 chown -R administrador:administrador "$INSTALL_DIR"
