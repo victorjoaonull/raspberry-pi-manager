@@ -61,6 +61,10 @@ if [ ${#FOUND[@]} -gt 0 ]; then
         echo "  - $d"
     done
     echo "Removendo..."
+    # Mudar para um diretório seguro antes de remover possíveis diretórios
+    # de instalação (evita 'getcwd: cannot access parent directories' quando
+    # o script é executado dentro do diretório alvo que será removido).
+    cd /tmp || cd / || true
     for d in "${FOUND[@]}"; do
         rm -rf "$d" || true
     done
