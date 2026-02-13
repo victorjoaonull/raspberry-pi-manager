@@ -417,6 +417,21 @@ fi
 # ========== CONFIGURAR SERVIÇO SYSTEMD ==========
 [ -n "$SERVICE_NAME" ] || SERVICE_NAME="${SERVICE_NAME}"
 echo -e "${BLUE}[11.5/12]${NC} Configurando serviço systemd..."
+
+# Garantir que ExecStart está corrigido com o caminho absoluto
+PYTHON_PATH="$INSTALL_DIR/venv/bin/python"
+APP_PATH="$INSTALL_DIR/app.py"
+
+# Validar que os caminhos existem
+if [ ! -f "$PYTHON_PATH" ]; then
+    echo -e "${YELLOW}⚠️  Aviso: Python não encontrado em $PYTHON_PATH${NC}"
+    echo -e "${BLUE}Criando venv novamente...${NC}"
+    sudo -u administrador python3 -m venv "$INSTALL_DIR/venv" --system-site-packages || {
+        echo -e "${RED}❌ Erro ao criar venv${NC}"
+        exit 1
+    }
+fi
+
 cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
 [Unit]
 Description=Gerenciador Web Raspberry PI
@@ -430,7 +445,7 @@ User=administrador
 Group=administrador
 WorkingDirectory=$INSTALL_DIR
 EnvironmentFile=/etc/default/${SERVICE_NAME}
-ExecStart=$INSTALL_DIR/venv/bin/python $INSTALL_DIR/app.py
+ExecStart=$PYTHON_PATH $APP_PATH
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -462,7 +477,14 @@ fi
 
 if ! systemctl enable "${SERVICE_NAME}.service" 2>/dev/null; then
     echo -e "${RED}❌ Erro ao habilitar serviço${NC}"
+    systemctl status "${SERVICE_NAME}.service" || true
     exit 1
+fi
+
+# Validar arquivo de serviço
+echo -e "${BLUE}🔍 Validando arquivo de serviço...${NC}"
+if ! systemd-analyze verify /etc/systemd/system/${SERVICE_NAME}.service 2>/dev/null; then
+    echo -e "${YELLOW}⚠️  Aviso: systemd-analyze não disponível, mas continuando...${NC}"
 fi
 
 # ========== CONFIGURAR AUTO-LOGIN ==========
@@ -561,7 +583,7 @@ echo ""
 echo -e "${BLUE}🔄 Iniciando o serviço...${NC}"
 # Aguardar um pouco para garantir que o daemon recarregou
 sleep 2
-systemctl start "${SERVICE_NAME}.service" || { echo -e "${RED}❌ Erro ao iniciar serviço${NC}"; exit 1; }
+systemctl start "${SERVICE_NAME}.service" || true
 sleep 3
 
 # Verificar se o serviço está rodando
@@ -581,6 +603,18 @@ if systemctl is-active --quiet $SERVICE_NAME; then
 else
     echo -e "${RED}❌ Erro ao iniciar o serviço. Verifique os logs:${NC}"
     echo -e "${YELLOW}sudo journalctl -u $SERVICE_NAME -n 30${NC}"
+    echo ""
+    echo -e "${BLUE}📋 Informações de diagnóstico:${NC}"
+    echo -e "  Arquivo de serviço: /etc/systemd/system/${SERVICE_NAME}.service"
+    echo -e "  Python executável: $PYTHON_PATH"
+    echo -e "  App.py: $APP_PATH"
+    echo -e "  Diretório de trabalho: $INSTALL_DIR"
+    echo ""
+    echo -e "${BLUE}Verificar arquivo de serviço:${NC}"
+    cat /etc/systemd/system/${SERVICE_NAME}.service
+    echo ""
+    echo -e "${BLUE}Logs recentes:${NC}"
+    journalctl -u $SERVICE_NAME -n 30 || true
     exit 1
 fi
 
