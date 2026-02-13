@@ -17,6 +17,9 @@ import hashlib
 import threading
 import subprocess
 
+# Versão da Aplicação
+APP_VERSION = "2.3.8"
+
 app = Flask(__name__)
 app.secret_key = 'sil1234567890'  # Chave secreta para sessões
 
@@ -752,6 +755,12 @@ def open_browser_with_urls():
         import traceback
         traceback.print_exc()
 
+# ========== CONTEXT PROCESSOR - Disponibiliza variáveis em todas as templates ==========
+@app.context_processor
+def inject_version():
+    """Disponibiliza APP_VERSION em todas as templates"""
+    return dict(app_version=APP_VERSION)
+
 @app.route('/api/system/info')
 def get_system_info():
     """Retorna informações detalhadas do sistema"""
@@ -836,7 +845,8 @@ def get_system_info():
             'cpu_usage': cpu_usage,
             'memory_usage': memory_usage,
             'os_version': os_version,
-            'kernel': kernel
+            'kernel': kernel,
+            'app_version': APP_VERSION
         })
         
     except Exception as e:

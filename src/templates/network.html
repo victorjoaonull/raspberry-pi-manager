@@ -355,7 +355,10 @@
     <div class="header">
         <div class="site-brand">
             <img src="{{ url_for('static', filename='imgs/logo.png') }}" alt="Logo" class="logo-img">
-            <h1 class="brand-title">Configuração de Rede</h1>
+            <div>
+                <h1 class="brand-title">Configuração de Rede</h1>
+                <small style="color: #95a5a6; font-size: 0.8em;">v{{ app_version }}</small>
+            </div>
         </div>
         <a href="{{ url_for('index') }}" class="btn">Voltar</a>
     </div>
