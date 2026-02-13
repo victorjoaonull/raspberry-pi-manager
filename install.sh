@@ -60,17 +60,29 @@ for p in "${SEARCH_PATHS[@]}"; do
     fi
 done
 if [ ${#FOUND[@]} -gt 0 ]; then
+    # Resolver o caminho real do REPO_DIR para comparação segura
+    REPO_DIR_REAL="$(realpath "$REPO_DIR" 2>/dev/null || echo "$REPO_DIR")"
+    
     echo "Encontrado diretórios para remoção:" 
     for d in "${FOUND[@]}"; do
-        echo "  - $d"
+        D_REAL="$(realpath "$d" 2>/dev/null || echo "$d")"
+        if [ "$D_REAL" = "$REPO_DIR_REAL" ]; then
+            echo "  ⊘ $d (pulado - é origem do installer)"
+        else
+            echo "  - $d (será removido)"
+        fi
     done
+    
     echo "Removendo..."
     # Mudar para um diretório seguro antes de remover possíveis diretórios
-    # de instalação (evita 'getcwd: cannot access parent directories' quando
-    # o script é executado dentro do diretório alvo que será removido).
     cd /tmp || cd / || true
+    
     for d in "${FOUND[@]}"; do
-        rm -rf "$d" || true
+        D_REAL="$(realpath "$d" 2>/dev/null || echo "$d")"
+        # NÃO remova o diretório que contém o script de instalação
+        if [ "$D_REAL" != "$REPO_DIR_REAL" ]; then
+            rm -rf "$d" || true
+        fi
     done
 else
     echo "Nenhuma instalação antiga encontrada."
@@ -141,6 +153,11 @@ else
         elif [ -f "$SRC_DIR/requirements.txt" ]; then
             cp "$SRC_DIR/requirements.txt" "$INSTALL_DIR/"
         fi
+    fi
+    
+    # Se há um arquivo app.py diretamente em REPO_DIR, copie também
+    if [ -f "$REPO_DIR/app.py" ] && [ "$(realpath "$REPO_DIR")" != "$(realpath "$INSTALL_DIR")" ]; then
+        cp "$REPO_DIR/app.py" "$INSTALL_DIR/"
     fi
 
     if [ -f "$REPO_DIR/update_app.sh" ]; then
@@ -377,9 +394,9 @@ SyslogIdentifier=${SERVICE_NAME}
 # Segurança / sandboxing
 NoNewPrivileges=yes
 PrivateTmp=yes
-ProtectSystem=full
-ProtectHome=read-only
-ReadWritePaths=$INSTALL_DIR /home/administrador/chromium-profile
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=$INSTALL_DIR /home/administrador/chromium-profile /var/log
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
 # Ambiente mínimo
