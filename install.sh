@@ -44,6 +44,10 @@ if ! id "administrador" &>/dev/null; then
     echo -e "${YELLOW}⚠️  ALTERE A SENHA APÓS A INSTALAÇÃO!${NC}"
 fi
 
+# ========== CAPTURAR DIRETÓRIO DO REPOSITÓRIO ==========
+# Deve ser feito ANTES de mudar de diretório durante a limpeza
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # ========== LIMPAR INSTALAÇÕES ANTIGAS ==========
 echo -e "${BLUE}[--]${NC} Removendo possíveis instalações antigas que contenham 'pi-manager' no nome..."
 SEARCH_PATHS=("/home" "/opt" "/usr/local" "/srv" "/var/www" "/root" "/tmp")
@@ -77,8 +81,6 @@ fi
 INSTALL_DIR="${INSTALL_DIR:-/home/administrador/raspberry-pi-manager}"
 VENV_DIR="$INSTALL_DIR/venv"
 SERVICE_NAME="${SERVICE_NAME:-raspberry-pi-manager}"
-# Diretório do repositório (onde o script está localizado)
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GIT_REPO="${GIT_REPO:-https://github.com/victorjoaonull/raspberry-pi-manager.git}"
 # Se desejar clonar do GitHub, exporte CLONE_FROM_GITHUB=true antes de rodar
 CLONE_FROM_GITHUB="${CLONE_FROM_GITHUB:-false}"
