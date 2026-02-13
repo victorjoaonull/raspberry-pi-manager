@@ -439,7 +439,6 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-
 Type=simple
 User=administrador
 Group=administrador
@@ -452,15 +451,7 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=${SERVICE_NAME}
 
-# Segurança / sandboxing
-NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectSystem=strict
-ProtectHome=yes
-ReadWritePaths=$INSTALL_DIR /home/administrador/chromium-profile /var/log
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-
-# Ambiente mínimo
+# Ambiente
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="PYTHONUNBUFFERED=1"
 
