@@ -64,26 +64,27 @@ if [ ${#FOUND[@]} -gt 0 ]; then
     REPO_DIR_REAL="$(realpath "$REPO_DIR" 2>/dev/null || echo "$REPO_DIR")"
     
     echo "Encontrado diretórios para remoção:" 
+    DIRS_TO_REMOVE=()
     for d in "${FOUND[@]}"; do
         D_REAL="$(realpath "$d" 2>/dev/null || echo "$d")"
         if [ "$D_REAL" = "$REPO_DIR_REAL" ]; then
             echo "  ⊘ $d (pulado - é origem do installer)"
         else
             echo "  - $d (será removido)"
+            DIRS_TO_REMOVE+=("$d")
         fi
     done
     
-    echo "Removendo..."
-    # Mudar para um diretório seguro antes de remover possíveis diretórios
-    cd /tmp || cd / || true
-    
-    for d in "${FOUND[@]}"; do
-        D_REAL="$(realpath "$d" 2>/dev/null || echo "$d")"
-        # NÃO remova o diretório que contém o script de instalação
-        if [ "$D_REAL" != "$REPO_DIR_REAL" ]; then
-            rm -rf "$d" || true
-        fi
-    done
+    if [ ${#DIRS_TO_REMOVE[@]} -gt 0 ]; then
+        echo "Removendo diretórios antigos..."
+        # Mudar para um diretório seguro antes de remover possíveis diretórios
+        cd /tmp || cd / || true
+        
+        for d in "${DIRS_TO_REMOVE[@]}"; do
+            echo "  Removendo: $d"
+            rm -rf "$d" || echo -e "${YELLOW}⚠️  Aviso: não foi possível remover $d${NC}"
+        done
+    fi
 else
     echo "Nenhuma instalação antiga encontrada."
 fi
@@ -98,10 +99,42 @@ GIT_REPO="${GIT_REPO:-https://github.com/victorjoaonull/raspberry-pi-manager.git
 CLONE_FROM_GITHUB="${CLONE_FROM_GITHUB:-false}"
 WEBHOOK_SECRET="${WEBHOOK_SECRET:-}"
 
+# ========== VERIFICAR CONECTIVIDADE ==========
+echo -e "${BLUE}[1.5/12]${NC} Verificando conectividade de rede..."
+NET_OK=false
+for i in {1..5}; do
+    if ping -c 1 8.8.8.8 &>/dev/null || ping -c 1 1.1.1.1 &>/dev/null; then
+        echo -e "${GREEN}✅ Conectividade verificada${NC}"
+        NET_OK=true
+        break
+    fi
+    if [ $i -lt 5 ]; then
+        echo -e "${YELLOW}⚠️  Tentativa $i/5: sem conectividade. Aguardando...${NC}"
+        sleep 5
+    fi
+done
+if [ "$NET_OK" = false ]; then
+    echo -e "${RED}❌ Sem conectividade de rede. Verifique sua conexão.${NC}"
+    exit 1
+fi
+
 # ========== ATUALIZAR SISTEMA ==========
 echo -e "${BLUE}[2/12]${NC} Atualizando sistema..."
-apt update
-apt upgrade -y
+APT_OK=false
+for i in {1..3}; do
+    if apt update && apt upgrade -y; then
+        APT_OK=true
+        break
+    fi
+    if [ $i -lt 3 ]; then
+        echo -e "${YELLOW}⚠️  apt falhou. Tentativa $((i+1))/3...${NC}"
+        sleep 10
+    fi
+done
+if [ "$APT_OK" = false ]; then
+    echo -e "${RED}❌ Falha ao atualizar sistema após 3 tentativas${NC}"
+    exit 1
+fi
 
 # ========== INSTALAR DEPENDÊNCIAS ==========
 echo -e "${BLUE}[3/12]${NC} Instalando dependências..."
@@ -160,9 +193,9 @@ else
         cp "$REPO_DIR/app.py" "$INSTALL_DIR/"
     fi
 
-    if [ -f "$REPO_DIR/update_app.sh" ]; then
+    if [ -f "$REPO_DIR/update_app.sh" ] && [ "$(realpath "$REPO_DIR")" != "$(realpath "$INSTALL_DIR")" ]; then
         cp "$REPO_DIR/update_app.sh" "$INSTALL_DIR/"
-    elif [ -f "$SRC_DIR/update_app.sh" ]; then
+    elif [ -f "$SRC_DIR/update_app.sh" ] && [ "$(realpath "$SRC_DIR")" != "$(realpath "$INSTALL_DIR")" ]; then
         cp "$SRC_DIR/update_app.sh" "$INSTALL_DIR/"
     fi
 fi
@@ -198,7 +231,7 @@ else
 fi
 
 # Executar aplicação
-exec python app.py
+exec python "$INSTALL_DIR/app.py"
 EOF
 
 chmod +x "$INSTALL_DIR/run.sh"
@@ -339,7 +372,20 @@ chmod 440 /etc/sudoers.d/pi-manager
 # Validar o arquivo sudoers criado
 if ! visudo -cf /etc/sudoers.d/pi-manager >/dev/null 2>&1; then
     echo -e "${RED}❌ Erro: o arquivo /etc/sudoers.d/pi-manager contém erros${NC}"
+    cat /etc/sudoers.d/pi-manager
     exit 1
+fi
+
+# Testar se as permissões funcionam (apenas se o usuário existe)
+if id "administrador" &>/dev/null 2>&1; then
+    echo -e "${BLUE}🔒 Testando permissões sudo para o usuário administrador...${NC}"
+    if sudo -u administrador -n /usr/local/bin/pi-manager-nmcli help >/dev/null 2>&1; then
+        echo -e "${GREEN}✅ Permissões sudo verificadas${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Sudoers configurado mas permissões podem não estar funcionando.${NC}"
+    fi
+else
+    echo -e "${YELLOW}⚠️  Usuário administrador não existe ainda; pulando teste de permissões.${NC}"
 fi
 
 # ========== CRIAR ARQUIVO DE AMBIENTE PARA WEBHOOK ==========
@@ -408,7 +454,16 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable ${SERVICE_NAME}.service || true
+if systemctl is-active --quiet "${SERVICE_NAME}.service" 2>/dev/null; then
+    echo -e "${YELLOW}⚠️  Parando serviço anterior para reinstalação...${NC}"
+    systemctl stop "${SERVICE_NAME}.service" || true
+    sleep 2
+fi
+
+if ! systemctl enable "${SERVICE_NAME}.service" 2>/dev/null; then
+    echo -e "${RED}❌ Erro ao habilitar serviço${NC}"
+    exit 1
+fi
 
 # ========== CONFIGURAR AUTO-LOGIN ==========
 echo -e "${BLUE}[12/12]${NC} Configurando auto-login gráfico..."
@@ -443,12 +498,18 @@ USER_AUTOSTART_DIR="/home/administrador/.config/autostart"
 mkdir -p "$USER_DESKTOP_DIR"
 mkdir -p "$USER_AUTOSTART_DIR"
 
-# Detecta binário do Chromium
-if [ -x "/usr/bin/chromium" ]; then
-    CHROMIUM_BIN="/usr/bin/chromium"
-elif [ -x "/usr/bin/chromium-browser" ]; then
-    CHROMIUM_BIN="/usr/bin/chromium-browser"
-else
+# Detecta binário do Chromium (mais localizações)
+CHROMIUM_BIN=""
+for bin in chromium chromium-browser google-chrome google-chrome-stable; do
+    if command -v "$bin" >/dev/null 2>&1; then
+        CHROMIUM_BIN="$bin"
+        echo -e "${GREEN}✅ Chromium encontrado: $CHROMIUM_BIN${NC}"
+        break
+    fi
+done
+
+if [ -z "$CHROMIUM_BIN" ]; then
+    echo -e "${YELLOW}⚠️  Chromium não encontrado. Pulando configuração.${NC}"
     CHROMIUM_BIN="chromium"
 fi
 
@@ -498,24 +559,29 @@ echo -e "    Comando: sudo nano $ENV_FILE"
 echo ""
 
 echo -e "${BLUE}🔄 Iniciando o serviço...${NC}"
-systemctl start ${SERVICE_NAME}.service || true
+# Aguardar um pouco para garantir que o daemon recarregou
+sleep 2
+systemctl start "${SERVICE_NAME}.service" || { echo -e "${RED}❌ Erro ao iniciar serviço${NC}"; exit 1; }
 sleep 3
 
 # Verificar se o serviço está rodando
 if systemctl is-active --quiet $SERVICE_NAME; then
     echo -e "${GREEN}✅ Serviço iniciado com sucesso!${NC}"
     
-    # Testar se a API responde
+    # Testar se a API responde usando nc ou /dev/tcp (mais portátil que curl)
     echo -e "${BLUE}🧪 Testando API...${NC}"
     sleep 2
-    if curl -s http://localhost:5000 > /dev/null; then
-        echo -e "${GREEN}✅ API respondendo corretamente!${NC}"
+    
+    # Tenta conexão TCP porta 5000
+    if timeout 3 bash -c "</dev/tcp/localhost/5000" 2>/dev/null; then
+        echo -e "${GREEN}✅ API respondendo na porta 5000!${NC}"
     else
-        echo -e "${YELLOW}⚠️ API não respondeu. Verifique os logs.${NC}"
+        echo -e "${YELLOW}⚠️  Não foi possível verificar API. Verifique os logs.${NC}"
     fi
 else
     echo -e "${RED}❌ Erro ao iniciar o serviço. Verifique os logs:${NC}"
-    echo -e "${YELLOW}sudo journalctl -u $SERVICE_NAME -n 20${NC}"
+    echo -e "${YELLOW}sudo journalctl -u $SERVICE_NAME -n 30${NC}"
+    exit 1
 fi
 
 echo ""
