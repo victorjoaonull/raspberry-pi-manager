@@ -132,7 +132,7 @@ else
     # instalador de dentro do próprio diretório alvo), NÃO copie para evitar
     # criar cópias recursivas dentro de si mesmo.
     if [ "$(realpath "$SRC_DIR")" = "$(realpath "$INSTALL_DIR")" ]; then
-        echo -e "${YELLOW}⚠️  Fonte e destino são o mesmo diretório; pulando cópia de arquivos.${NC}"
+        echo -e "${YELLOW}⚠️  Fonte e destino são o mesmo diretório; arquivos já estão no lugar.${NC}"
     else
         # Use rsync se disponível (mais robusto), fallback para cp com nullglob
         if command -v rsync >/dev/null 2>&1; then
@@ -148,9 +148,9 @@ else
         fi
 
         # Copy possible auxiliary files: prefer repository root, fallback to SRC_DIR
-        if [ -f "$REPO_DIR/requirements.txt" ]; then
+        if [ -f "$REPO_DIR/requirements.txt" ] && [ "$(realpath "$REPO_DIR")" != "$(realpath "$INSTALL_DIR")" ]; then
             cp "$REPO_DIR/requirements.txt" "$INSTALL_DIR/"
-        elif [ -f "$SRC_DIR/requirements.txt" ]; then
+        elif [ -f "$SRC_DIR/requirements.txt" ] && [ "$(realpath "$SRC_DIR")" != "$(realpath "$INSTALL_DIR")" ]; then
             cp "$SRC_DIR/requirements.txt" "$INSTALL_DIR/"
         fi
     fi
