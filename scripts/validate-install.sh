@@ -4,3 +4,5 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bash -n "$ROOT/install.sh"
 echo "✅ install.sh: sintaxe bash OK"
+bash -n "$ROOT/uninstall.sh"
+echo "✅ uninstall.sh: sintaxe bash OK"

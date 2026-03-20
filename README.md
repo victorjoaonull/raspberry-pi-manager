@@ -72,6 +72,20 @@ http://192.168.1.100:5000
 
 ⚠️ **ALTERE A SENHA IMEDIATAMENTE APÓS O PRIMEIRO LOGIN**
 
+### Desinstalar
+
+No repositório ou em `/home/administrador/raspberry-pi-manager` (após copiar o script pelo instalador):
+
+```bash
+chmod +x uninstall.sh
+sudo ./uninstall.sh              # confirmações interativas
+sudo ./uninstall.sh -y           # remove serviço, wrappers, sudoers e a pasta da app
+sudo ./uninstall.sh -y --purge   # também remove /etc/default/raspberry-pi-manager
+sudo ./uninstall.sh -y --keep-app-dir   # só remove integração (systemd, /usr/local/bin, sudoers)
+```
+
+O desinstalador **não** remove pacotes `apt`, auto-login do Lightdm nem o perfil `~/chromium-profile`. Use `./uninstall.sh --help` para todas as opções.
+
 ---
 
 ## Configuração Pós-Instalação
@@ -286,6 +300,7 @@ raspberry-pi-manager/
 │   ├── raspberry-pi-manager.service    # Unit file do systemd
 │   └── raspberry-pi-manager.env.example # Exemplo de variáveis
 ├── install.sh                 # Script de instalação
+├── uninstall.sh               # Desinstala serviço e integração no sistema
 ├── update_app.sh              # Script de atualização automática
 ├── requirements.txt           # Dependências Python
 └── README.md                  # Este arquivo

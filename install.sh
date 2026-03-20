@@ -198,6 +198,10 @@ else
     elif [ -f "$SRC_DIR/update_app.sh" ] && [ "$(realpath "$SRC_DIR")" != "$(realpath "$INSTALL_DIR")" ]; then
         cp "$SRC_DIR/update_app.sh" "$INSTALL_DIR/"
     fi
+    if [ -f "$REPO_DIR/uninstall.sh" ] && [ "$(realpath "$REPO_DIR")" != "$(realpath "$INSTALL_DIR")" ]; then
+        cp "$REPO_DIR/uninstall.sh" "$INSTALL_DIR/"
+        chmod +x "$INSTALL_DIR/uninstall.sh"
+    fi
 fi
 chown -R administrador:administrador "$INSTALL_DIR"
 
