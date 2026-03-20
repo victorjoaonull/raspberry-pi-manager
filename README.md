@@ -151,6 +151,23 @@ Adicione este secret ao seu repositório GitHub:
 
 O arquivo `.github/workflows/deploy.yml` já está configurado. A cada push para `main`, o Pi receberá a atualização automaticamente.
 
+**Instalação em pasta personalizada:** defina `INSTALL_DIR` ao correr o `install.sh` e confirme que `/etc/default/raspberry-pi-manager` contém `APP_INSTALL_DIR` com o mesmo caminho (o instalador acrescenta se faltar). Isso alinha `update_app.sh`, o webhook (só executa `update_app.sh` dentro de diretórios permitidos) e as atualizações.
+
+---
+
+## Variáveis de ambiente (`/etc/default/raspberry-pi-manager`)
+
+| Variável | Descrição |
+|----------|-----------|
+| `WEBHOOK_SECRET` | Secret HMAC do GitHub (obrigatório para auto-update via webhook). |
+| `APP_INSTALL_DIR` | Diretório da aplicação (usado por `update_app.sh` em `/usr/local/bin` e na lista segura do webhook). |
+| `PI_MANAGER_INSTALL_DIR` | Opcional; mesmo papel que `APP_INSTALL_DIR` se precisar de um segundo nome. |
+| `PI_MANAGER_LOG_DIR` | Onde gravar logs de ficheiro da app (ex.: `browser-launch.log`). Por omissão: `<pasta da app>/logs`. |
+| `SESSION_COOKIE_SECURE` | `true` / `1` / `yes` se a UI for servida só por HTTPS (cookies `Secure`). |
+| `SESSION_COOKIE_SAMESITE` | Valor do SameSite (ex.: `Lax`, `Strict`); por omissão `Lax`. |
+
+Reinicie o serviço após alterar: `sudo systemctl restart raspberry-pi-manager`.
+
 ---
 
 ## Usando o Gerenciador
@@ -234,10 +251,11 @@ Possíveis problemas:
      -d "$BODY"
    ```
 
-3. Verifique os logs do webhook em `update_app.log`:
+3. Verifique os logs do webhook em `update_app.log` na pasta da instalação (valor de `APP_INSTALL_DIR` em `/etc/default/raspberry-pi-manager`, por defeito `/home/administrador/raspberry-pi-manager/update_app.log`):
    ```bash
    tail -f /home/administrador/raspberry-pi-manager/update_app.log
    ```
+   Se mudou o diretório de instalação, o webhook só corre `update_app.sh` se o caminho estiver permitido (raiz da app, `..`, caminhos conhecidos ou o definido em `APP_INSTALL_DIR` / `PI_MANAGER_INSTALL_DIR`).
 
 ### Login: "PAM nao disponivel" ou acentos quebrados (MÃ³dulo / usuÃ¡rio)
 
@@ -270,6 +288,18 @@ O Chromium com **URLs de `config/autostart.conf`** é aberto **uma vez** pelo se
 - Log de lançamento: `tail -f /home/administrador/pi-manager/logs/browser-launch.log`
 - Display: `sudo -u administrador env DISPLAY=:0 xdpyinfo`
 - Reinício gráfico se necessário: `sudo systemctl restart lightdm`
+
+### Serviço `masked` (não inicia)
+
+Se aparecer `Unit ... is masked`:
+
+```bash
+sudo systemctl unmask raspberry-pi-manager.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now raspberry-pi-manager.service
+```
+
+O `install.sh` atual remove a máscara automaticamente antes de habilitar o serviço.
 
 ---
 

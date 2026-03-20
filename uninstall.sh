@@ -123,6 +123,8 @@ if systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE_NAME}.service"; t
     systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
     systemctl disable "${SERVICE_NAME}.service" 2>/dev/null || true
 fi
+# Remove máscara para uma futura reinstalação não falhar em systemctl start
+systemctl unmask "${SERVICE_NAME}.service" 2>/dev/null || true
 
 if [ -f "$UNIT_FILE" ]; then
     rm -f "$UNIT_FILE"

@@ -16,9 +16,6 @@ from datetime import datetime
 from collections import deque
 from typing import Optional
 import hmac
-import hashlib
-import threading
-import subprocess
 
 # Autenticação via PAM (senha real do Linux do usuário `administrador`).
 # Preferir SEMPRE o pacote Debian python3-pam (venv com --system-site-packages).
@@ -102,7 +99,7 @@ def get_pam_module():
 ADMIN_USERNAME = 'administrador'
 
 # Versão da Aplicação
-APP_VERSION = "2.4.2"
+APP_VERSION = "2.4.3"
 
 app = Flask(__name__)
 # JSON com caracteres Unicode legíveis nos endpoints (Flask 2.2+)
@@ -110,6 +107,11 @@ try:
     app.json.ensure_ascii = False  # type: ignore[attr-defined]
 except Exception:
     pass
+# Cookies de sessão (opcional via env em produção com HTTPS)
+if os.environ.get("SESSION_COOKIE_SECURE", "").lower() in ("1", "true", "yes"):
+    app.config["SESSION_COOKIE_SECURE"] = True
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = os.environ.get("SESSION_COOKIE_SAMESITE", "Lax")
 # Secret para sessões. Preferir variável de ambiente para evitar "hardcode".
 # Se não estiver definida, usa uma chave temporária (sessões expiram após reinício).
 app.secret_key = os.environ.get('FLASK_SECRET_KEY')
@@ -188,13 +190,16 @@ def run_hostname(new_hostname, capture_output=True, text=True, timeout=10):
         except Exception as e:
             raise
 
-# Configurações
-CONFIG_DIR = '/home/administrador/pi-manager/config'
-NETWORK_CONFIG = os.path.join(CONFIG_DIR, 'network.conf')
-AUTOSTART_CONFIG = os.path.join(CONFIG_DIR, 'autostart.conf')
-LOG_DIR = '/home/administrador/pi-manager/logs'
+# Configurações — sempre relativas à pasta de app.py (INSTALL_DIR na instalação, src/ em dev)
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_DIR = os.path.join(_APP_DIR, "config")
+NETWORK_CONFIG = os.path.join(CONFIG_DIR, "network.conf")
+AUTOSTART_CONFIG = os.path.join(CONFIG_DIR, "autostart.conf")
+_LOG_OVERRIDE = os.environ.get("PI_MANAGER_LOG_DIR", "").strip()
+LOG_DIR = _LOG_OVERRIDE if _LOG_OVERRIDE else os.path.join(_APP_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
-BROWSER_LOG = os.path.join(LOG_DIR, 'browser-launch.log')
+os.makedirs(CONFIG_DIR, exist_ok=True)
+BROWSER_LOG = os.path.join(LOG_DIR, "browser-launch.log")
 
 # ========== GERENCIADOR DE FAVORITOS (INLINE) ==========
 class ChromiumFavoritesManager:
@@ -303,7 +308,7 @@ class ChromiumFavoritesManager:
             uid = int(subprocess.check_output(['id', '-u', self.username]).strip())
             gid = int(subprocess.check_output(['id', '-g', self.username]).strip())
             return uid, gid
-        except:
+        except Exception:
             return 1000, 1000
     
     def backup_bookmarks(self):
@@ -382,7 +387,7 @@ class ChromiumFavoritesManager:
                     name = parsed.netloc.replace('www.', '')
                 else:
                     name = url.replace('http://', '').replace('https://', '').split('/')[0]
-            except:
+            except Exception:
                 name = f"Site {idx + 1}"
             
             # Cria GUID no formato correto (32 caracteres com hífens)
@@ -674,7 +679,7 @@ def is_valid_url_or_ip(url):
         try:
             result = urlparse(url)
             return all([result.scheme, result.netloc])
-        except:
+        except Exception:
             return False
     ip_port_pattern = r'^(\d{1,3}\.){3}\d{1,3}:\d+$'
     if re.match(ip_port_pattern, url):
@@ -870,7 +875,7 @@ def cleanup_chromium_locks():
             if os.path.exists(lock_file):
                 try:
                     os.remove(lock_file)
-                except:
+                except OSError:
                     subprocess.run(['sudo', 'rm', '-f', lock_file], 
                                  stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
         
@@ -888,7 +893,7 @@ def cleanup_chromium_locks():
                 add_event(f"⚠️ Aviso: locks residuais encontrados: {check.stdout.strip()[:200]}...")
             else:
                 add_event("✅ Todos os locks do Chromium foram removidos")
-        except:
+        except Exception:
             add_event("✅ Verificação de locks concluída")
             
         add_event("🧹 Limpeza do Chromium finalizada")
@@ -1164,11 +1169,11 @@ def get_system_info():
         try:
             with open('/proc/device-tree/model', 'r') as f:
                 model = f.read().strip('\x00')
-        except:
+        except Exception:
             try:
                 model = subprocess.check_output(['cat', '/sys/firmware/devicetree/base/model'], 
                                               text=True).strip('\x00')
-            except:
+            except Exception:
                 model = "Raspberry PI"
         
         # Uptime
@@ -1197,12 +1202,12 @@ def get_system_info():
             temp_match = re.search(r'(\d+\.?\d*)', temp_output)
             if temp_match:
                 temperature = f"{temp_match.group(1)}°C"
-        except:
+        except Exception:
             try:
                 with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
                     temp_raw = int(f.read().strip())
                     temperature = f"{temp_raw / 1000:.1f}°C"
-            except:
+            except Exception:
                 pass
         
         # CPU Usage
@@ -1219,7 +1224,7 @@ def get_system_info():
                     if line.startswith('PRETTY_NAME='):
                         os_version = line.split('=')[1].strip('"\'')
                         break
-        except:
+        except Exception:
             pass
         
         # Versão do Kernel
@@ -1950,7 +1955,7 @@ def get_chromium_profiles():
                         roots = data.get('roots', {})
                         for root in roots.values():
                             bookmarks_count += count_urls(root)
-                except:
+                except Exception:
                     bookmarks_count = 0
             
             profiles_info.append({
@@ -2034,7 +2039,7 @@ def force_sync_favorites():
                 # Envia sinal para Chromium recarregar favoritos
                 subprocess.run(['sudo', 'pkill', '-HUP', 'chromium'], 
                               capture_output=True, stderr=subprocess.DEVNULL)
-            except:
+            except Exception:
                 pass
             
             return jsonify({
@@ -2447,6 +2452,34 @@ def about():
     return render_template('about.html')
 
 
+def _is_allowed_update_script(path: str) -> bool:
+    """Evita executar bash em caminho arbitrário se app.root_path for manipulado."""
+    try:
+        rp = os.path.realpath(path)
+    except OSError:
+        return False
+    if os.path.basename(rp) != "update_app.sh":
+        return False
+    candidates = [
+        app.root_path,
+        os.path.abspath(os.path.join(app.root_path, "..")),
+        "/home/administrador/raspberry-pi-manager",
+        "/opt/raspberry-pi-manager",
+    ]
+    for _key in ("APP_INSTALL_DIR", "PI_MANAGER_INSTALL_DIR"):
+        _dir = os.environ.get(_key, "").strip()
+        if _dir:
+            candidates.append(_dir)
+    for c in candidates:
+        try:
+            root = os.path.realpath(c)
+        except OSError:
+            continue
+        if rp == root or rp.startswith(root + os.sep):
+            return True
+    return False
+
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Endpoint to receive GitHub webhook and trigger update script.
@@ -2479,8 +2512,14 @@ def webhook():
                 if os.path.isfile(alt):
                     script_path = alt
             add_event('Webhook validated — running update script')
-            # Use bash to run even if file is not executable
-            proc = subprocess.run(['/bin/bash', script_path], capture_output=True, text=True, timeout=600)
+            if not os.path.isfile(script_path):
+                add_event(f'Update script missing: {script_path}')
+                return
+            if not _is_allowed_update_script(script_path):
+                add_event(f'Update script path rejected: {script_path}')
+                return
+            script_abs = os.path.realpath(script_path)
+            proc = subprocess.run(['/bin/bash', script_abs], capture_output=True, text=True, timeout=600)
             add_event(f'Update stdout: {proc.stdout[:1000]}')
             if proc.stderr:
                 add_event(f'Update stderr: {proc.stderr[:1000]}')

@@ -260,8 +260,10 @@ chown administrador:administrador "$INSTALL_DIR/run.sh"
 echo -e "${BLUE}[9/12]${NC} Criando diretórios de configuração..."
 mkdir -p "$INSTALL_DIR/config"
 mkdir -p "$INSTALL_DIR/static"
+mkdir -p "$INSTALL_DIR/logs"
 chown administrador:administrador "$INSTALL_DIR/config"
 chown administrador:administrador "$INSTALL_DIR/static"
+chown administrador:administrador "$INSTALL_DIR/logs"
 
 # Configurar arquivo autostart.conf se não existir
 if [ ! -f "$INSTALL_DIR/config/autostart.conf" ]; then
@@ -436,6 +438,13 @@ SERVICE_NAME=raspberry-pi-manager
 # Diretório da app (update_app.sh em /usr/local/bin usa esta linha)
 #APP_INSTALL_DIR=/home/administrador/raspberry-pi-manager
 
+# Logs da app (browser-launch, etc.); por defeito usa INSTALL_DIR/logs
+#PI_MANAGER_LOG_DIR=/home/administrador/raspberry-pi-manager/logs
+
+# HTTPS atrás de proxy: cookies seguros (1/true/yes)
+#SESSION_COOKIE_SECURE=true
+#SESSION_COOKIE_SAMESITE=Lax
+
 # Outras variáveis opcionais
 #DEBUG=false
 #FLASK_HOST=0.0.0.0
@@ -504,11 +513,19 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
+# Unit mascarada impede start/enable (symlink para /dev/null)
+if systemctl is-masked --quiet "${SERVICE_NAME}.service" 2>/dev/null; then
+    echo -e "${YELLOW}⚠️  Serviço estava mascarado — removendo máscara...${NC}"
+    systemctl unmask "${SERVICE_NAME}.service" || true
+    systemctl daemon-reload
+fi
 if systemctl is-active --quiet "${SERVICE_NAME}.service" 2>/dev/null; then
     echo -e "${YELLOW}⚠️  Parando serviço anterior para reinstalação...${NC}"
     systemctl stop "${SERVICE_NAME}.service" || true
     sleep 2
 fi
+# Garantir unmask antes de enable (caso is-masked não detecte em todas as versões)
+systemctl unmask "${SERVICE_NAME}.service" 2>/dev/null || true
 
 if ! systemctl enable "${SERVICE_NAME}.service" 2>/dev/null; then
     echo -e "${RED}❌ Erro ao habilitar serviço${NC}"

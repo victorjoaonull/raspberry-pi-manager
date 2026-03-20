@@ -177,10 +177,16 @@ if ! [ -f "$INSTALL_DIR/app.py" ]; then
     echo ""
 fi
 
-if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+if systemctl is-masked --quiet "${SERVICE_NAME}.service" 2>/dev/null; then
+    echo -e "${RED}2. Serviço MASCARADO (não pode iniciar):${NC}"
+    echo "   sudo systemctl unmask ${SERVICE_NAME}.service"
+    echo "   sudo systemctl enable --now ${SERVICE_NAME}.service"
+    echo ""
+elif ! systemctl is-active --quiet "$SERVICE_NAME"; then
     echo -e "${RED}2. Serviço não está rodando:${NC}"
     echo "   Iniciar manualmente:"
     echo "   sudo systemctl start $SERVICE_NAME"
+    echo "   Se disser 'masked': sudo systemctl unmask $SERVICE_NAME"
     echo "   Verificar logs:"
     echo "   sudo journalctl -u $SERVICE_NAME -f"
     echo ""
