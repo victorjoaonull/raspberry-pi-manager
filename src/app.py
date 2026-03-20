@@ -13,25 +13,64 @@ import signal
 from pathlib import Path
 from datetime import datetime
 from collections import deque
+from typing import Optional
 import hmac
 import hashlib
 import threading
 import subprocess
 
 # Autenticação via PAM (senha real do Linux do usuário `administrador`).
-# - Debian python3-pam: função pam.authenticate(user, password, service=...) (estilo gnosek; sucesso = sem exceção).
-# - PyPI python-pam 2.x: ctx = pam.authenticate(); ctx.authenticate(user, password, ...) -> bool.
-try:
-    import pam as pam_module  # type: ignore
-except Exception:
-    pam_module = None
+# Preferir SEMPRE o pacote Debian python3-pam (venv com --system-site-packages).
+# O wheel PyPI "python-pam" no site-packages do venv costuma sombrear o apt e falhar no import (ex.: Python 3.13).
+_PAM_IMPORT_ERROR: Optional[Exception] = None
+
+
+def _load_pam_module():
+    global _PAM_IMPORT_ERROR
+    try:
+        import pam as m  # type: ignore
+
+        if getattr(m, "authenticate", None) is None:
+            raise ImportError("módulo pam sem authenticate")
+        return m
+    except Exception as e:
+        _PAM_IMPORT_ERROR = e
+    # Fallback: carregar o pacote do apt diretamente (se o venv tiver um pam quebrado)
+    try:
+        import importlib.util
+
+        for pkg in (
+            "/usr/lib/python3/dist-packages/pam/__init__.py",
+            "/usr/lib/python3.13/dist-packages/pam/__init__.py",
+            "/usr/lib/python3.12/dist-packages/pam/__init__.py",
+        ):
+            if not os.path.isfile(pkg):
+                continue
+            spec = importlib.util.spec_from_file_location("_pi_manager_pam_apt", pkg)
+            if spec is None or spec.loader is None:
+                continue
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            if getattr(mod, "authenticate", None) is not None:
+                return mod
+    except Exception as e2:
+        _PAM_IMPORT_ERROR = e2
+    return None
+
+
+pam_module = _load_pam_module()
 
 ADMIN_USERNAME = 'administrador'
 
 # Versão da Aplicação
-APP_VERSION = "2.3.9"
+APP_VERSION = "2.4.0"
 
 app = Flask(__name__)
+# JSON com caracteres Unicode legíveis nos endpoints (Flask 2.2+)
+try:
+    app.json.ensure_ascii = False  # type: ignore[attr-defined]
+except Exception:
+    pass
 # Secret para sessões. Preferir variável de ambiente para evitar "hardcode".
 # Se não estiver definida, usa uma chave temporária (sessões expiram após reinício).
 app.secret_key = os.environ.get('FLASK_SECRET_KEY')
@@ -39,16 +78,24 @@ if not app.secret_key:
     app.secret_key = os.urandom(32)
     print("⚠️ FLASK_SECRET_KEY não definida; usando chave temporária (sessões expiram após reinício).")
 
-# Garante UTF-8 no Content-Type (evita acentos como "Ã¡" quando proxy/nginx omite charset).
+if pam_module is None:
+    print(
+        "⚠️ AVISO raspberry-pi-manager: PAM indisponível — login por senha Linux não funcionará. "
+        f"Causa: {_PAM_IMPORT_ERROR!r}"
+    )
+
+
+# Força UTF-8 no Content-Type (substitui charset errado de proxy/nginx, ex.: iso-8859-1).
 @app.after_request
 def _ensure_utf8_charset(response):
-    ct = response.headers.get('Content-Type', '')
-    if not ct or 'charset=' in ct.lower():
+    ct = response.headers.get("Content-Type", "")
+    if not ct:
         return response
-    if 'text/html' in ct.split(';')[0].strip().lower():
-        response.headers['Content-Type'] = 'text/html; charset=utf-8'
-    elif 'application/json' in ct.split(';')[0].strip().lower():
-        response.headers['Content-Type'] = 'application/json; charset=utf-8'
+    base = ct.split(";")[0].strip().lower()
+    if base == "text/html":
+        response.headers["Content-Type"] = "text/html; charset=utf-8"
+    elif base == "application/json":
+        response.headers["Content-Type"] = "application/json; charset=utf-8"
     return response
 
 

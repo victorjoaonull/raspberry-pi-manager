@@ -89,9 +89,11 @@ if [ -x "$VENV_PIP" ] && [ -f "${APP_ROOT}/requirements.txt" ]; then
     if [ "$(id -u)" -eq 0 ] && id administrador >/dev/null 2>&1; then
         sudo -u administrador "$VENV_PIP" install --upgrade pip >>"$LOGFILE" 2>&1 || true
         sudo -u administrador "$VENV_PIP" install -r "${APP_ROOT}/requirements.txt" >>"$LOGFILE" 2>&1 || true
+        sudo -u administrador "$VENV_PIP" uninstall -y python-pam >>"$LOGFILE" 2>&1 || true
     else
         "$VENV_PIP" install --upgrade pip >>"$LOGFILE" 2>&1 || true
         "$VENV_PIP" install -r "${APP_ROOT}/requirements.txt" >>"$LOGFILE" 2>&1 || true
+        "$VENV_PIP" uninstall -y python-pam >>"$LOGFILE" 2>&1 || true
     fi
     echo "[$(date -Iseconds)] venv pip install done" >>"$LOGFILE"
 elif [ -f "${APP_ROOT}/requirements.txt" ]; then

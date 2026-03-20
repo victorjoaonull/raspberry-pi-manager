@@ -1,3 +1,3 @@
 Flask>=2.3.0
-# Autenticação no login (alternativa ao pacote Debian python3-pam no venv isolado)
-python-pam>=2.0.2
+# PAM: use apenas o pacote do sistema (sudo apt install python3-pam) com venv --system-site-packages.
+# NÃO instale o wheel PyPI "python-pam" no venv: ele sombreia o apt e costuma quebrar o import no Raspberry (Python 3.13).

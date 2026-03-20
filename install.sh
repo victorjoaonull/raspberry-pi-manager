@@ -213,6 +213,9 @@ if [ -f "$INSTALL_DIR/requirements.txt" ]; then
 else
     echo -e "${YELLOW}⚠️  requirements.txt não encontrado em $INSTALL_DIR; pulando instalação de dependências Python.${NC}"
 fi
+# Wheel PyPI "python-pam" no venv sombreia python3-pam do apt e falha no import em vários Pis (ex. Python 3.13)
+echo -e "${BLUE}Removendo pacote pip python-pam do venv (mantém autenticação via apt python3-pam)...${NC}"
+sudo -u administrador "$VENV_DIR/bin/pip" uninstall -y python-pam 2>/dev/null || true
 
 # ========== CRIAR SHELL SCRIPT WRAPPER ==========
 echo -e "${BLUE}[8/12]${NC} Criando script wrapper..."
