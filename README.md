@@ -226,12 +226,13 @@ Possíveis problemas:
 
 ### Chromium não abre automaticamente
 
-- Verifique se o X11/Wayland está ativo: `echo $DISPLAY`
-- Reinicie o serviço lightdm: `sudo systemctl restart lightdm`
-- Verifique o arquivo de autostart:
-  ```bash
-  cat ~/.config/autostart/Chromium-Raspberry.desktop
-  ```
+O Chromium com **URLs de `config/autostart.conf`** é aberto **uma vez** pelo serviço `raspberry-pi-manager` (thread em `startup_tasks` → `open_browser_with_urls`). Não use um segundo `.desktop` em `~/.config/autostart/` para o mesmo perfil (`chromium-profile`), senão há risco de SingletonLock / duas aberturas.
+
+- Aguarde ~15–20 s após o boot (atraso interno para X11 e display `:0`).
+- Verifique o serviço: `sudo systemctl status raspberry-pi-manager`
+- Log de lançamento: `tail -f /home/administrador/pi-manager/logs/browser-launch.log`
+- Display: `sudo -u administrador env DISPLAY=:0 xdpyinfo`
+- Reinício gráfico se necessário: `sudo systemctl restart lightdm`
 
 ---
 

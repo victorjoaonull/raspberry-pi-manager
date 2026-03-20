@@ -18,6 +18,14 @@ import hashlib
 import threading
 import subprocess
 
+# Autenticação de senha do usuário do Raspberry via PAM (senha real do Linux)
+try:
+    from pam import PAM  # type: ignore
+except Exception:
+    PAM = None
+
+ADMIN_USERNAME = 'administrador'
+
 # Versão da Aplicação
 APP_VERSION = "2.3.8"
 
@@ -607,6 +615,35 @@ def format_url(url):
         return 'http://' + url
     return url
 
+def verify_admin_password(password: str) -> bool:
+    """
+    Verifica a senha REAL do usuário `administrador` no Raspberry via PAM.
+    """
+    if PAM is None:
+        return False
+
+    pam = PAM()
+    # Tentativas comuns de service no PAM
+    for service in ('login', 'sshd'):
+        try:
+            # Alguns bindings aceitam service=...
+            if pam.authenticate(ADMIN_USERNAME, password, service=service):
+                return True
+        except TypeError:
+            # Se o binding não aceitar service=, tenta sem service.
+            try:
+                return pam.authenticate(ADMIN_USERNAME, password)
+            except Exception:
+                pass
+        except Exception:
+            continue
+
+    # Última tentativa: sem service
+    try:
+        return pam.authenticate(ADMIN_USERNAME, password)
+    except Exception:
+        return False
+
 def sync_chromium_favorites():
     """Sincroniza os favoritos do Chromium com as URLs configuradas em TODOS os perfis"""
     try:
@@ -735,26 +772,128 @@ def cleanup_chromium_locks():
         # Não levanta exceção - apenas loga e continua
         return False
 
-def open_browser_with_urls():
-    """Abre o browser com URLs configuradas e perfil específico"""
-    time.sleep(10)  # Aguarda mais tempo para sistema estar pronto
-    
+def _read_log_tail(path: str, max_chars: int = 2000) -> str:
     try:
-        # 1. SEMPRE limpa locks antes de abrir (garantia)
+        if not os.path.exists(path):
+            return ""
+        # Lê de trás para frente (via seek) sem precisar carregar o arquivo inteiro.
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            seek_back = max(size - (max_chars * 4), 0)
+            f.seek(seek_back)
+            data = f.read()
+            return data[-max_chars:]
+    except Exception:
+        return ""
+
+
+def _chromium_probable_singleton_issue(log_text: str) -> bool:
+    if not log_text:
+        return False
+    text = log_text.lower()
+    # Palavras típicas de erro de Singleton nos logs do Chromium.
+    keywords = [
+        "singletonlock",
+        "singletonsocket",
+        "another instance of chromium",
+        "another instance is running",
+        "chromium is already running",
+        "singleton",
+        ".com.google.chrome",
+    ]
+    return any(k in text for k in keywords)
+
+
+def _chromium_is_running() -> bool:
+    try:
+        r = subprocess.run(
+            ["pgrep", "-f", "chromium"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+        )
+        return bool(r.stdout and r.stdout.strip())
+    except Exception:
+        return False
+
+
+def _chromium_managed_profile_running() -> bool:
+    """
+    True se já existe processo Chromium usando o perfil /home/administrador/chromium-profile.
+    Evita segunda abertura no boot (ex.: autostart legado + serviço) e evita cleanup de locks
+    com o browser aberto.
+    """
+    marker = "chromium-profile"
+    try:
+        r = subprocess.run(
+            ["pgrep", "-af", "chromium"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+        )
+        if r.returncode != 0 or not (r.stdout and r.stdout.strip()):
+            return False
+        return marker in r.stdout
+    except Exception:
+        return False
+
+
+def _popen_chromium_logged(cmd: list, log_label: str):
+    """Inicia Chromium com stdout/stderr no browser-launch.log. Retorna (process, fh ou None)."""
+    fh = None
+    try:
+        fh = open(BROWSER_LOG, "a", encoding="utf-8", errors="replace")
+        fh.write(f"\n[{datetime.now().isoformat()}] {log_label} cmd: {' '.join(cmd)}\n")
+    except Exception:
+        fh = None
+    proc = subprocess.Popen(
+        cmd,
+        stdout=fh if fh else subprocess.DEVNULL,
+        stderr=fh if fh else subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+    )
+    return proc, fh
+
+
+def open_browser_with_urls():
+    """
+    Abre o Chromium uma vez com as URLs de autostart.conf (via systemd → Flask → thread).
+
+    Fluxo de boot: após o serviço subir, startup_tasks() espera ~5s e dispara esta função;
+    aqui aguardamos mais ~10s para X11 (:0) e sessão gráfica estabilizarem, depois:
+    - se o perfil gerenciado já estiver em uso → não relança nem limpa locks (fica estável);
+    - senão → limpa locks, sincroniza favoritos, inicia Chromium com as URLs.
+    """
+    time.sleep(10)  # Aguarda X11 / autologin / display :0
+
+    try:
+        urls = load_autostart_urls()
+        if not urls:
+            add_event("ℹ️ Nenhuma URL configurada no autostart.conf — sem abrir browser")
+            return
+
+        if _chromium_managed_profile_running():
+            add_event(
+                "ℹ️ Chromium já está em execução com o perfil gerenciado "
+                "(chromium-profile). Pulando nova abertura e limpeza de locks."
+            )
+            add_event("🔄 Sincronizando favoritos (instância já aberta)...")
+            success, message = sync_chromium_favorites()
+            add_event(f"📋 Resultado da sincronização: {message}")
+            return
+
+        # 1. Limpeza de locks só quando vamos abrir nós mesmos (evita derrubar instância ativa)
         add_event("🧹 Executando limpeza preventiva de locks...")
         cleanup_chromium_locks()
-        
-        # 2. Primeiro garante que os favoritos estão sincronizados
+
+        # 2. Favoritos alinhados ao autostart.conf antes das abas
         add_event("🔄 Sincronizando favoritos antes de abrir browser...")
         success, message = sync_chromium_favorites()
         add_event(f"📋 Resultado da sincronização: {message}")
-        
-        # 3. Carrega URLs
-        urls = load_autostart_urls()
-        if not urls:
-            add_event("ℹ️ Nenhuma URL configurada no autostart.conf")
-            return
-        
+
         add_event(f"🎯 Abrindo {len(urls)} URLs no browser...")
         
         # 4. Verifica se o display está disponível
@@ -803,26 +942,73 @@ def open_browser_with_urls():
                 cmd.append(formatted_url)
         
         add_event(f"🚀 Executando Chromium com perfil específico...")
-        
-        # Executa em background
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL
-        )
-        
+
+        process, browser_log_fh = _popen_chromium_logged(cmd, "LAUNCH")
         add_event(f"✅ Browser iniciado com PID {process.pid}")
-        
-        # Verifica se realmente abriu
+
         time.sleep(3)
-        result = subprocess.run(['pgrep', '-f', 'chromium'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-        if result.stdout.strip():
-            pids = result.stdout.strip().split('\n')
+        if _chromium_is_running():
+            result = subprocess.run(
+                ["pgrep", "-f", "chromium"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            pids = result.stdout.strip().split("\n") if result.stdout else []
             add_event(f"✅ Chromium está rodando ({len(pids)} processos)")
         else:
-            add_event("⚠️ Chromium pode não ter iniciado corretamente")
+            tail = _read_log_tail(BROWSER_LOG, 2500)
+            singleton_hint = _chromium_probable_singleton_issue(tail)
+            if singleton_hint:
+                add_event(
+                    "⚠️ Chromium não abriu (indícios de SingletonLock/SingletonSocket). "
+                    "Resetando locks e tentando novamente..."
+                )
+            else:
+                add_event(
+                    "⚠️ Chromium não abriu na primeira tentativa. "
+                    "Resetando locks (singleton) e tentando novamente..."
+                )
+
+            if browser_log_fh:
+                try:
+                    browser_log_fh.close()
+                except Exception:
+                    pass
+                browser_log_fh = None
+
+            cleanup_chromium_locks()
+            time.sleep(1)
+
+            process2, browser_log_fh = _popen_chromium_logged(cmd, "LAUNCH_RETRY_AFTER_SINGLETON_RESET")
+            add_event(f"🔄 Nova tentativa após reset (PID {process2.pid})")
+            time.sleep(3)
+
+            if _chromium_is_running():
+                result = subprocess.run(
+                    ["pgrep", "-f", "chromium"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                )
+                pids = result.stdout.strip().split("\n") if result.stdout else []
+                add_event(f"✅ Chromium está rodando após reset de singleton ({len(pids)} processos)")
+            else:
+                tail2 = _read_log_tail(BROWSER_LOG, 2500)
+                if _chromium_probable_singleton_issue(tail2):
+                    add_event(
+                        "❌ Chromium ainda não abriu após reset de Singleton. "
+                        "Verifique `browser-launch.log` e se há outra instância ativa."
+                    )
+                else:
+                    trimmed = tail2.replace("\n", " ")[:300]
+                    add_event(f"⚠️ Chromium não abriu após retry. Log (trecho): {trimmed}...")
+
+        if browser_log_fh:
+            try:
+                browser_log_fh.close()
+            except Exception:
+                pass
         
     except Exception as e:
         add_event(f"❌ Erro ao abrir browser: {e}")
@@ -1094,7 +1280,12 @@ def test_connection_api(name):
 # ========== /api/system/hostname ==========
 @app.route('/api/system/hostname', methods=['POST'])
 def change_hostname():
-    """Altera o hostname do sistema e limpa os locks do Chromium"""
+    """
+    Altera o hostname do sistema.
+
+    Importante: não mexe em processos/locks do Chromium durante a troca,
+    para evitar erros relacionados a SingletonLock/SingletonSocket.
+    """
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
     
@@ -1121,33 +1312,33 @@ def change_hostname():
         result = run_hostname(new_hostname)
         
         if result.returncode == 0:
-            # ✅ SUCESSO: Agora limpa os locks do Chromium
-            add_event(f"✅ Hostname alterado para {new_hostname}. Iniciando limpeza do Chromium...")
-            
-            # Mata o Chromium se estiver rodando
+            # ✅ SUCESSO: Não mexer no Chromium/locks para preservar operação e evitar erros.
+            add_event(f"✅ Hostname alterado para {new_hostname}. Preservando Chromium/locks.")
+
+            chromium_running = False
             try:
-                subprocess.run(['sudo', 'pkill', '-f', 'chromium'], 
-                             stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-                time.sleep(1)
-            except:
-                pass
-            
-            # Limpa todos os locks
-            cleanup_success = cleanup_chromium_locks()
-            
-            if cleanup_success:
-                add_event(f"✅ Hostname alterado e Chromium limpo com sucesso")
+                check = subprocess.run(
+                    ['pgrep', '-f', 'chromium'],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    timeout=5
+                )
+                chromium_running = bool(check.stdout and check.stdout.strip())
+            except Exception:
+                chromium_running = False
+
+            if chromium_running:
                 return jsonify({
-                    'success': True, 
-                    'message': 'Hostname alterado com sucesso. Chromium foi reiniciado e locks limpos.'
-                })
-            else:
-                add_event(f"⚠️ Hostname alterado mas houve problemas na limpeza do Chromium")
-                return jsonify({
-                    'success': True, 
+                    'success': True,
                     'warning': True,
-                    'message': 'Hostname alterado, mas houve avisos na limpeza do Chromium. O browser pode precisar ser reiniciado manualmente.'
+                    'message': 'Hostname alterado com sucesso. Chromium estava rodando e foi preservado (locks mantidos).'
                 })
+
+            return jsonify({
+                'success': True,
+                'message': 'Hostname alterado com sucesso.'
+            })
         else:
             stderr = (result.stderr or '').strip()
             error_msg = f"Falha ao alterar hostname: {stderr}" if stderr else "Falha ao alterar hostname (código de erro desconhecido)"
@@ -1805,28 +1996,121 @@ def restart_browser():
         # 3. Reabre com perfil específico
         urls = load_autostart_urls()
         if urls:
+            chromium_bin = (
+                "chromium-browser"
+                if os.path.exists("/usr/bin/chromium-browser")
+                else "chromium"
+            )
             cmd = [
-                'sudo', '-u', 'administrador',
-                'env', 'DISPLAY=:0',
-                'chromium',
-                '--user-data-dir=/home/administrador/chromium-profile',
-                '--ignore-certificate-errors',
-                '--start-maximized',
-                '--no-first-run',
-                '--disable-dbus',
-                '--noerrdialogs',
-                '--disable-infobars',
-                '--disable-single-process',
-                '--disable-features=SingleProcess'
+                "sudo",
+                "-u",
+                "administrador",
+                "env",
+                "DISPLAY=:0",
+                chromium_bin,
+                "--user-data-dir=/home/administrador/chromium-profile",
+                "--ignore-certificate-errors",
+                "--start-maximized",
+                "--no-first-run",
+                "--disable-dbus",
+                "--noerrdialogs",
+                "--disable-infobars",
+                "--disable-single-process",
+                "--disable-features=SingleProcess",
             ]
             formatted_urls = [format_url(url) for url in urls if url.strip()]
             cmd.extend(formatted_urls)
-            subprocess.Popen(cmd)
-            add_event("✅ Browser reiniciado com perfil específico e locks limpos")
-            return jsonify({
-                'success': True, 
-                'message': 'Browser reiniciado com locks limpos e favoritos sincronizados'
-            })
+
+            browser_log_fh = None
+            try:
+                _, browser_log_fh = _popen_chromium_logged(cmd, "RESTART")
+            except Exception:
+                try:
+                    subprocess.Popen(cmd)
+                except Exception:
+                    pass
+
+            time.sleep(2)
+
+            if _chromium_is_running():
+                add_event("✅ Browser reiniciado e Chromium está rodando")
+                if browser_log_fh:
+                    try:
+                        browser_log_fh.close()
+                    except Exception:
+                        pass
+                return jsonify(
+                    {"success": True, "message": "Browser reiniciado com sucesso"}
+                )
+
+            tail = _read_log_tail(BROWSER_LOG, 2500)
+            if _chromium_probable_singleton_issue(tail):
+                add_event(
+                    "⚠️ Chromium não subiu (possível Singleton). Resetando locks e tentando novamente..."
+                )
+            else:
+                add_event(
+                    "⚠️ Chromium não ficou rodando. Resetando locks (singleton) e nova tentativa..."
+                )
+
+            if browser_log_fh:
+                try:
+                    browser_log_fh.close()
+                except Exception:
+                    pass
+                browser_log_fh = None
+
+            cleanup_chromium_locks()
+            time.sleep(1)
+
+            try:
+                _, browser_log_fh = _popen_chromium_logged(
+                    cmd, "RESTART_RETRY_AFTER_SINGLETON_RESET"
+                )
+            except Exception:
+                try:
+                    subprocess.Popen(cmd)
+                except Exception:
+                    pass
+
+            time.sleep(2)
+
+            if _chromium_is_running():
+                add_event("✅ Browser reiniciado após reset de singleton")
+                if browser_log_fh:
+                    try:
+                        browser_log_fh.close()
+                    except Exception:
+                        pass
+                return jsonify(
+                    {
+                        "success": True,
+                        "message": "Browser reiniciado após limpeza de SingletonLock/SingletonSocket",
+                    }
+                )
+
+            tail2 = _read_log_tail(BROWSER_LOG, 2500)
+            if _chromium_probable_singleton_issue(tail2):
+                add_event(
+                    "❌ Chromium ainda não subiu após reset de Singleton. Ver browser-launch.log."
+                )
+                error_msg = (
+                    "Chromium falhou após reset de SingletonLock/SingletonSocket. "
+                    "Consulte browser-launch.log."
+                )
+            else:
+                trimmed = tail2.replace("\n", " ")[:300]
+                error_msg = (
+                    f"Chromium não ficou rodando após retry. Log (trecho): {trimmed}..."
+                )
+
+            if browser_log_fh:
+                try:
+                    browser_log_fh.close()
+                except Exception:
+                    pass
+
+            return jsonify({"success": False, "error": error_msg})
         else:
             add_event("✅ Browser fechado (nenhuma URL configurada)")
             return jsonify({
@@ -1921,17 +2205,21 @@ def diagnostic_session():
 # ========== PÁGINAS WEB (ROTAS SIMPLES) ==========
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    """Rota de login simples. Usa `ADMIN_PASSWORD` no ambiente ou 'raspberry' por padrão."""
+    """Rota de login simples autenticando a senha REAL do usuário `administrador` via PAM."""
     if request.method == 'POST':
         # aceita formulário ou JSON
         password = request.form.get('password') if request.form else None
         if not password and request.is_json:
             password = (request.get_json() or {}).get('password')
 
-        # O instalador cria o usuário 'administrador' com senha padrão 'raspberry'
-        # (e recomenda alterar após o primeiro login).
-        admin_pass = os.environ.get('ADMIN_PASSWORD', 'raspberry')
-        if password and password == admin_pass:
+        if not password:
+            return render_template('login.html', error='Senha inválida')
+
+        if PAM is None:
+            # Não vaza detalhes para o usuário; apenas informa que o servidor não está configurado.
+            return render_template('login.html', error='Servidor mal configurado (PAM ausente).')
+
+        if verify_admin_password(password):
             session['authenticated'] = True
             return redirect(url_for('index'))
         # mostrar página com erro
@@ -2003,8 +2291,8 @@ def startup_tasks():
         else:
             print(f"❌ Erro: {message}")
     
-    # Fallback para abrir URLs
-    print("⏰ Iniciando thread para abrir browser em 10 segundos...")
+    # Uma thread dispara open_browser_with_urls (mais ~10s dentro dela para X11 :0)
+    print("⏰ Agendando abertura única do Chromium (URLs em autostart.conf)...")
     time.sleep(3)  # Aguarda mais para sincronização terminar
     browser_thread = threading.Thread(target=open_browser_with_urls)
     browser_thread.daemon = True

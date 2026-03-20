@@ -138,7 +138,7 @@ fi
 
 # ========== INSTALAR DEPENDÊNCIAS ==========
 echo -e "${BLUE}[3/12]${NC} Instalando dependências..."
-apt install -y python3-pip python3-venv nginx git chromium python3-full xdotool network-manager --no-install-recommends
+apt install -y python3-pip python3-venv nginx git chromium python3-full xdotool network-manager python3-pam --no-install-recommends
 
 # ========== CRIAR DIRETÓRIO DE INSTALAÇÃO ==========
 echo -e "${BLUE}[4/12]${NC} Criando diretório de instalação..."
@@ -529,12 +529,16 @@ fi
 DESKTOP_FILE_CONTENT="[Desktop Entry]\nName=Chromium-Raspberry\nComment=Chromium custom profile for Raspberry PI Manager\nExec=$CHROMIUM_BIN --user-data-dir=/home/administrador/chromium-profile --no-first-run --start-maximized --ignore-certificate-errors --noerrdialogs --disable-session-crashed-bubble %U\nTerminal=false\nType=Application\nCategories=Network;WebBrowser;\nStartupNotify=false\n"
 
 echo -e "$DESKTOP_FILE_CONTENT" > "$USER_DESKTOP_DIR/Chromium-Raspberry.desktop"
-echo -e "[Desktop Entry]\nName=Chromium-Raspberry\nComment=Autostart Chromium custom profile for Raspberry PI Manager\nExec=$CHROMIUM_BIN --user-data-dir=/home/administrador/chromium-profile --no-first-run --start-maximized --ignore-certificate-errors --noerrdialogs --disable-session-crashed-bubble\nTerminal=false\nType=Application\nX-GNOME-Autostart-enabled=true\nStartupNotify=false\n" > "$USER_AUTOSTART_DIR/Chromium-Raspberry.desktop"
+# NÃO colocar Chromium em ~/.config/autostart: o serviço systemd já chama open_browser_with_urls()
+# com as URLs de config/autostart.conf. Dois autostarts geravam SingletonLock e duas instâncias.
+LEGACY_AUTOSTART="$USER_AUTOSTART_DIR/Chromium-Raspberry.desktop"
+if [ -f "$LEGACY_AUTOSTART" ]; then
+    rm -f "$LEGACY_AUTOSTART"
+    echo -e "${YELLOW}⚠️  Removido autostart legado $LEGACY_AUTOSTART (Chromium passa a subir só pelo serviço).${NC}"
+fi
 
 chown administrador:administrador "$USER_DESKTOP_DIR/Chromium-Raspberry.desktop" || true
-chown administrador:administrador "$USER_AUTOSTART_DIR/Chromium-Raspberry.desktop" || true
 chmod 755 "$USER_DESKTOP_DIR/Chromium-Raspberry.desktop" || true
-chmod 644 "$USER_AUTOSTART_DIR/Chromium-Raspberry.desktop" || true
 
 # ========== INSTALAÇÃO CONCLUÍDA ==========
 echo ""
