@@ -53,6 +53,7 @@ O script irá:
 - ✅ Instalar o serviço systemd
 - ✅ Configurar auto-login gráfico
 - ✅ Instalar e configurar Chromium
+- ✅ Criar atalho **Chromium-Raspberry.desktop** na área de trabalho (`xdg-user-dir DESKTOP`): mesmo perfil `/home/administrador/chromium-profile` e mesmas flags base que o autostart do serviço (marcado como confiável para duplo clique quando `gio` estiver disponível)
 - ✅ Criar script de atualização automática
 
 ### 4. Acesse a aplicação

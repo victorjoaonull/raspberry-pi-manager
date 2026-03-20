@@ -903,6 +903,7 @@ def open_browser_with_urls():
             add_event("⚠️ Display :0 não está disponível, tentando mesmo assim...")
         
         # 5. Comando para abrir Chromium COM FLAGS ANTILOCK
+        # Atalho da área de trabalho (install.sh → Chromium-Raspberry.desktop): manter flags alinhadas.
         cmd = [
             'sudo', '-u', 'administrador',
             'env', 'DISPLAY=:0',

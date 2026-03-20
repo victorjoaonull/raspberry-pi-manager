@@ -504,41 +504,90 @@ if [ "$CLONE_FROM_GITHUB" != "true" ] && ! [ -d "$INSTALL_DIR/.git" ]; then
     echo "✅ Git inicializado; execute 'git pull origin main' para sincronizar com o GitHub"
 fi
 
-# Criar atalho .desktop "Chromium-Raspberry" no Desktop do usuário e em autostart
-echo -e "${BLUE}⚙️  Criando atalho Chromium-Raspberry...${NC}"
-USER_DESKTOP_DIR="/home/administrador/Desktop"
+# Atalho na área de trabalho: mesmo perfil e mesmas flags base que src/app.py (open_browser_with_urls)
+echo -e "${BLUE}⚙️  Criando atalho do Chromium na área de trabalho (perfil pi-manager)...${NC}"
 USER_AUTOSTART_DIR="/home/administrador/.config/autostart"
-mkdir -p "$USER_DESKTOP_DIR"
 mkdir -p "$USER_AUTOSTART_DIR"
 
-# Detecta binário do Chromium (mais localizações)
-CHROMIUM_BIN=""
-for bin in chromium chromium-browser google-chrome google-chrome-stable; do
-    if command -v "$bin" >/dev/null 2>&1; then
-        CHROMIUM_BIN="$bin"
-        echo -e "${GREEN}✅ Chromium encontrado: $CHROMIUM_BIN${NC}"
-        break
+# Pasta "Área de trabalho" / Desktop localizada (xdg-user-dir)
+USER_DESKTOP_DIR=""
+if id administrador >/dev/null 2>&1; then
+    if command -v runuser >/dev/null 2>&1; then
+        USER_DESKTOP_DIR="$(runuser -u administrador -- xdg-user-dir DESKTOP 2>/dev/null || true)"
     fi
-done
+    if [ -z "$USER_DESKTOP_DIR" ]; then
+        USER_DESKTOP_DIR="$(sudo -u administrador env HOME=/home/administrador xdg-user-dir DESKTOP 2>/dev/null || true)"
+    fi
+fi
+if [ -z "$USER_DESKTOP_DIR" ] || [ ! -d "$USER_DESKTOP_DIR" ]; then
+    USER_DESKTOP_DIR="/home/administrador/Desktop"
+fi
+mkdir -p "$USER_DESKTOP_DIR"
+chown administrador:administrador "$USER_DESKTOP_DIR" 2>/dev/null || true
 
-if [ -z "$CHROMIUM_BIN" ]; then
-    echo -e "${YELLOW}⚠️  Chromium não encontrado. Pulando configuração.${NC}"
-    CHROMIUM_BIN="chromium"
+# Mesma prioridade que app.py: /usr/bin/chromium-browser, senão chromium (e fallbacks)
+CHROMIUM_BIN=""
+if [ -x /usr/bin/chromium-browser ]; then
+    CHROMIUM_BIN="/usr/bin/chromium-browser"
+elif command -v chromium-browser >/dev/null 2>&1; then
+    CHROMIUM_BIN="$(command -v chromium-browser)"
+elif command -v chromium >/dev/null 2>&1; then
+    CHROMIUM_BIN="$(command -v chromium)"
+elif command -v google-chrome-stable >/dev/null 2>&1; then
+    CHROMIUM_BIN="$(command -v google-chrome-stable)"
+elif command -v google-chrome >/dev/null 2>&1; then
+    CHROMIUM_BIN="$(command -v google-chrome)"
 fi
 
-DESKTOP_FILE_CONTENT="[Desktop Entry]\nName=Chromium-Raspberry\nComment=Chromium custom profile for Raspberry PI Manager\nExec=$CHROMIUM_BIN --user-data-dir=/home/administrador/chromium-profile --no-first-run --start-maximized --ignore-certificate-errors --noerrdialogs --disable-session-crashed-bubble %U\nTerminal=false\nType=Application\nCategories=Network;WebBrowser;\nStartupNotify=false\n"
+if [ -z "$CHROMIUM_BIN" ]; then
+    echo -e "${YELLOW}⚠️  Chromium não encontrado no PATH. Atalho usará /usr/bin/chromium (instale o pacote).${NC}"
+    CHROMIUM_BIN="/usr/bin/chromium"
+fi
+echo -e "${GREEN}✅ Binário do atalho: $CHROMIUM_BIN${NC}"
 
-echo -e "$DESKTOP_FILE_CONTENT" > "$USER_DESKTOP_DIR/Chromium-Raspberry.desktop"
+DESKTOP_SHORTCUT="$USER_DESKTOP_DIR/Chromium-Raspberry.desktop"
+# Flags alinhadas a open_browser_with_urls em src/app.py (sem URLs; %U = arquivos/links arrastados)
+# Manter sincronizado ao alterar o lançamento automático no Python.
+cat > "$DESKTOP_SHORTCUT" << DESKTOPEOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Chromium (Pi Manager)
+Name[pt_BR]=Chromium (Pi Manager)
+Comment=Mesmo perfil e flags do Raspberry Pi Manager (/home/administrador/chromium-profile)
+Comment[pt_BR]=Mesmo perfil do gerenciador: autostart, favoritos e kiosk
+TryExec=${CHROMIUM_BIN}
+Exec=env DISPLAY=:0 ${CHROMIUM_BIN} --user-data-dir=/home/administrador/chromium-profile --no-first-run --start-maximized --ignore-certificate-errors --noerrdialogs --disable-session-crashed-bubble --disable-single-process --disable-features=ChromeWhatsNewUI --disable-features=SingleProcess --disable-features=ProcessPerSite --disable-gpu --disable-dbus --disable-background-networking --disable-sync --disable-default-apps --disable-extensions --disable-component-extensions-with-background-pages --disable-client-side-phishing-detection --disable-crash-reporter --disable-ipc-flooding-protection --disable-prompt-on-repost --disable-renderer-backgrounding --disable-hang-monitor --no-sandbox --test-type --force-device-scale-factor=1 %U
+Icon=chromium
+Terminal=false
+Categories=Network;WebBrowser;
+StartupNotify=false
+DESKTOPEOF
+
 # NÃO colocar Chromium em ~/.config/autostart: o serviço systemd já chama open_browser_with_urls()
-# com as URLs de config/autostart.conf. Dois autostarts geravam SingletonLock e duas instâncias.
 LEGACY_AUTOSTART="$USER_AUTOSTART_DIR/Chromium-Raspberry.desktop"
 if [ -f "$LEGACY_AUTOSTART" ]; then
     rm -f "$LEGACY_AUTOSTART"
     echo -e "${YELLOW}⚠️  Removido autostart legado $LEGACY_AUTOSTART (Chromium passa a subir só pelo serviço).${NC}"
 fi
 
-chown administrador:administrador "$USER_DESKTOP_DIR/Chromium-Raspberry.desktop" || true
-chmod 755 "$USER_DESKTOP_DIR/Chromium-Raspberry.desktop" || true
+chown administrador:administrador "$DESKTOP_SHORTCUT" || true
+chmod 755 "$DESKTOP_SHORTCUT" || true
+
+# Tornar o atalho "confiável" para duplo clique (GTK / gerenciadores recentes)
+if command -v gio >/dev/null 2>&1 && id administrador >/dev/null 2>&1; then
+    runuser -u administrador -- gio set "$DESKTOP_SHORTCUT" metadata::trusted true 2>/dev/null \
+        || sudo -u administrador gio set "$DESKTOP_SHORTCUT" metadata::trusted true 2>/dev/null \
+        || true
+fi
+
+if command -v desktop-file-validate >/dev/null 2>&1; then
+    echo -e "${BLUE}🔍 Validando .desktop...${NC}"
+    desktop-file-validate "$DESKTOP_SHORTCUT" && echo -e "${GREEN}✅ desktop-file-validate OK${NC}" \
+        || echo -e "${YELLOW}⚠️  desktop-file-validate reportou avisos (ver acima).${NC}"
+fi
+
+echo -e "${GREEN}✅ Atalho: $DESKTOP_SHORTCUT${NC}"
 
 # ========== INSTALAÇÃO CONCLUÍDA ==========
 echo ""
