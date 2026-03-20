@@ -18,16 +18,18 @@ import hashlib
 import threading
 import subprocess
 
-# Autenticação de senha do usuário do Raspberry via PAM (senha real do Linux)
+# Autenticação via PAM (senha real do Linux do usuário `administrador`).
+# - Debian python3-pam: função pam.authenticate(user, password, service=...) (estilo gnosek; sucesso = sem exceção).
+# - PyPI python-pam 2.x: ctx = pam.authenticate(); ctx.authenticate(user, password, ...) -> bool.
 try:
-    from pam import PAM  # type: ignore
+    import pam as pam_module  # type: ignore
 except Exception:
-    PAM = None
+    pam_module = None
 
 ADMIN_USERNAME = 'administrador'
 
 # Versão da Aplicação
-APP_VERSION = "2.3.8"
+APP_VERSION = "2.3.9"
 
 app = Flask(__name__)
 # Secret para sessões. Preferir variável de ambiente para evitar "hardcode".
@@ -36,6 +38,18 @@ app.secret_key = os.environ.get('FLASK_SECRET_KEY')
 if not app.secret_key:
     app.secret_key = os.urandom(32)
     print("⚠️ FLASK_SECRET_KEY não definida; usando chave temporária (sessões expiram após reinício).")
+
+# Garante UTF-8 no Content-Type (evita acentos como "Ã¡" quando proxy/nginx omite charset).
+@app.after_request
+def _ensure_utf8_charset(response):
+    ct = response.headers.get('Content-Type', '')
+    if not ct or 'charset=' in ct.lower():
+        return response
+    if 'text/html' in ct.split(';')[0].strip().lower():
+        response.headers['Content-Type'] = 'text/html; charset=utf-8'
+    elif 'application/json' in ct.split(';')[0].strip().lower():
+        response.headers['Content-Type'] = 'application/json; charset=utf-8'
+    return response
 
 
 
@@ -618,29 +632,55 @@ def format_url(url):
 def verify_admin_password(password: str) -> bool:
     """
     Verifica a senha REAL do usuário `administrador` no Raspberry via PAM.
+    Compatível com python3-pam (Debian) e python-pam (PyPI 2.x).
     """
-    if PAM is None:
+    if pam_module is None:
         return False
 
-    pam = PAM()
-    # Tentativas comuns de service no PAM
-    for service in ('login', 'sshd'):
-        try:
-            # Alguns bindings aceitam service=...
-            if pam.authenticate(ADMIN_USERNAME, password, service=service):
-                return True
-        except TypeError:
-            # Se o binding não aceitar service=, tenta sem service.
+    auth_fn = getattr(pam_module, 'authenticate', None)
+    if not callable(auth_fn):
+        return False
+
+    # PyPI python-pam 2.x: authenticate() sem args retorna objeto com .authenticate(...) -> bool
+    ctx = None
+    try:
+        ctx = auth_fn()
+    except TypeError:
+        ctx = None
+    except Exception:
+        ctx = None
+
+    if ctx is not None and hasattr(ctx, 'authenticate'):
+        inner = getattr(ctx, 'authenticate', None)
+        if callable(inner):
+            for service in ('login', 'sshd', 'su'):
+                try:
+                    if inner(ADMIN_USERNAME, password, service=service):
+                        return True
+                except TypeError:
+                    try:
+                        return bool(inner(ADMIN_USERNAME, password))
+                    except Exception:
+                        return False
+                except Exception:
+                    continue
             try:
-                return pam.authenticate(ADMIN_USERNAME, password)
+                return bool(inner(ADMIN_USERNAME, password))
             except Exception:
-                pass
+                return False
+
+    # Debian python3-pam / API função: authenticate(user, password, service=...) sem exceção = sucesso
+    for service in ('login', 'sshd', 'su'):
+        try:
+            auth_fn(ADMIN_USERNAME, password, service=service)
+            return True
+        except TypeError:
+            break
         except Exception:
             continue
-
-    # Última tentativa: sem service
     try:
-        return pam.authenticate(ADMIN_USERNAME, password)
+        auth_fn(ADMIN_USERNAME, password)
+        return True
     except Exception:
         return False
 
@@ -2216,9 +2256,15 @@ def login():
         if not password:
             return render_template('login.html', error='Senha inválida')
 
-        if PAM is None:
-            # Não vaza detalhes para o usuário; apenas informa que o servidor não está configurado.
-            return render_template('login.html', error='Servidor mal configurado (PAM ausente).')
+        if pam_module is None:
+            return render_template(
+                'login.html',
+                error=(
+                    'Módulo PAM não disponível neste Python. '
+                    'No Raspberry: sudo apt install python3-pam && sudo systemctl restart raspberry-pi-manager. '
+                    'Se o venv não enxergar o sistema: pip install python-pam ou recrie o venv com --system-site-packages.'
+                ),
+            )
 
         if verify_admin_password(password):
             session['authenticated'] = True

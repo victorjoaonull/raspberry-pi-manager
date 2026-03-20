@@ -1,1 +1,3 @@
 Flask>=2.3.0
+# Autenticação no login (alternativa ao pacote Debian python3-pam no venv isolado)
+python-pam>=2.0.2
