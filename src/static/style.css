@@ -200,6 +200,22 @@ body::before {
     border-radius: 5px;
     border-left: 4px solid #f39c12;
 }
+
+.info {
+    color: #3498db;
+    background: #eef6ff;
+    padding: 0.75rem;
+    border-radius: 5px;
+    border-left: 4px solid #3498db;
+}
+
+.warning-zone {
+    background: #ffffff;
+}
+
+.danger-zone {
+    background: #ffffff;
+}
 /* Responsividade */
 @media (max-width: 768px) {
     .header {

@@ -450,18 +450,6 @@
         })
         .catch(error => showMessage(msg, '❌ Erro: ' + error, 'error'));
 }
-
-// Função showMessage (se não existir)
-function showMessage(element, message, type) {
-    element.className = type === 'error' ? 'error-message' : 
-                       type === 'success' ? 'success-message' : 'info-message';
-    element.innerHTML = message;
-    element.style.display = 'block';
-    
-    setTimeout(() => {
-        element.style.display = 'none';
-    }, 5000);
-}
         // Alternar visibilidade da senha
         function togglePassword(fieldId) {
             const field = document.getElementById(fieldId);
@@ -585,7 +573,23 @@ function showMessage(element, message, type) {
             
             const msg = document.getElementById('system-actions-message');
             showMessage(msg, '⏳ Reiniciando...', 'info');
-            setTimeout(() => window.location.reload(), 2000);
+
+            fetch('/api/system/restart-service', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        showMessage(msg, '✅ ' + data.message, 'success');
+                    } else {
+                        showMessage(msg, '❌ ' + (data.error || 'Erro ao reiniciar'), 'error');
+                    }
+
+                    // A aplicação provavelmente será reiniciada antes do reload
+                    setTimeout(() => window.location.reload(), 1500);
+                })
+                .catch(error => showMessage(msg, '❌ Erro: ' + error, 'error'));
         }
         
         // Sincronizar favoritos

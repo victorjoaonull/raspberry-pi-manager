@@ -9,6 +9,7 @@ import threading
 import time
 import shutil
 import hashlib
+import signal
 from pathlib import Path
 from datetime import datetime
 from collections import deque
@@ -21,7 +22,12 @@ import subprocess
 APP_VERSION = "2.3.8"
 
 app = Flask(__name__)
-app.secret_key = 'sil1234567890'  # Chave secreta para sessões
+# Secret para sessões. Preferir variável de ambiente para evitar "hardcode".
+# Se não estiver definida, usa uma chave temporária (sessões expiram após reinício).
+app.secret_key = os.environ.get('FLASK_SECRET_KEY')
+if not app.secret_key:
+    app.secret_key = os.urandom(32)
+    print("⚠️ FLASK_SECRET_KEY não definida; usando chave temporária (sessões expiram após reinício).")
 
 
 
@@ -140,6 +146,8 @@ class ChromiumFavoritesManager:
         if not profiles:
             profiles = ['Default']
 
+        folder_name = "Sites Gerenciados"
+
         for profile in profiles:
             profile_bookmarks = self.chromium_profile_dir / profile / 'Bookmarks'
             profile_bookmarks.parent.mkdir(parents=True, exist_ok=True)
@@ -157,7 +165,13 @@ class ChromiumFavoritesManager:
                     all_success = False
 
             try:
-                bookmarks_data = self.create_bookmarks_structure(urls, "Sites Gerenciados")
+                if profile_bookmarks.exists():
+                    with open(profile_bookmarks, 'r', encoding='utf-8') as f:
+                        bookmarks_data = json.load(f)
+                else:
+                    bookmarks_data = self.create_bookmarks_structure([], folder_name)
+
+                bookmarks_data = self._upsert_managed_folder_in_bookmarks(bookmarks_data, urls, folder_name)
                 with open(profile_bookmarks, 'w', encoding='utf-8') as f:
                     json.dump(bookmarks_data, f, indent=2, ensure_ascii=False)
 
@@ -338,44 +352,98 @@ class ChromiumFavoritesManager:
             },
             "version": 1
         }
+
+    def _upsert_managed_folder_in_bookmarks(self, bookmarks_data, urls, folder_name):
+        """
+        Atualiza SOMENTE a pasta gerenciada (folder_name) dentro de um JSON de Bookmarks do Chromium,
+        preservando o restante (roots 'other' e 'synced' e outros favoritos).
+        """
+        roots = bookmarks_data.setdefault('roots', {})
+        bookmark_bar = roots.setdefault('bookmark_bar', {})
+
+        children = bookmark_bar.get('children')
+        if not isinstance(children, list):
+            children = []
+        bookmark_bar['children'] = children
+
+        managed_node = None
+        for node in children:
+            if node.get('type') == 'folder' and node.get('name') == folder_name:
+                managed_node = node
+                break
+
+        # Se não houver URLs, apenas limpa a pasta gerenciada (se existir)
+        if not urls:
+            if managed_node:
+                managed_node['children'] = []
+                managed_node['date_modified'] = str(int(time.time() * 1000000))
+            return bookmarks_data
+
+        # Gera somente o nó da pasta gerenciada a partir da estrutura "padrão"
+        temp = self.create_bookmarks_structure(urls, folder_name)
+        temp_children = (
+            temp.get('roots', {})
+            .get('bookmark_bar', {})
+            .get('children', [])
+        )
+
+        new_managed_node = None
+        for node in temp_children:
+            if node.get('type') == 'folder' and node.get('name') == folder_name:
+                new_managed_node = node
+                break
+
+        if new_managed_node is None and temp_children:
+            new_managed_node = temp_children[0]
+
+        if new_managed_node is None:
+            return bookmarks_data
+
+        if managed_node:
+            idx = children.index(managed_node)
+            children[idx] = new_managed_node
+        else:
+            children.append(new_managed_node)
+
+        bookmark_bar['children'] = children
+        return bookmarks_data
     
     def update_favorites(self, urls, folder_name="Sites Gerenciados"):
         """Atualiza os favoritos do Chromium com as URLs configuradas"""
         try:
             print(f"🔄 Atualizando favoritos com {len(urls)} URLs...")
-            
+
             # 1. Garante que o diretório existe
             self.bookmarks_file.parent.mkdir(parents=True, exist_ok=True)
-            
+
             # 2. Backup dos favoritos atuais
             self.backup_bookmarks()
+
+            # 3. Carrega o JSON de Bookmarks (para preservar tudo que não é da pasta gerenciada)
+            if self.bookmarks_file.exists():
+                with open(self.bookmarks_file, 'r', encoding='utf-8') as f:
+                    bookmarks_data = json.load(f)
+            else:
+                bookmarks_data = self.create_bookmarks_structure([], folder_name)
+
+            # 4. Apenas para mensagem/telemetria: conta quantos favoritos "não gerenciados" existem
+            try:
+                existing_favs = self.load_current_favorites()
+                preserved_count = sum(
+                    1 for fav in existing_favs
+                    if fav.get('folder') != folder_name and fav.get('folder') != "Sites Gerenciados"
+                )
+            except Exception:
+                preserved_count = 0
             
-            # 3. Carrega favoritos existentes (para preservar outros)
-            existing_favs = self.load_current_favorites()
-            print(f"📖 {len(existing_favs)} favoritos existentes encontrados")
-            
-            # 4. Preserva favoritos que não estão na pasta gerenciada
-            preserved_favs = []
-            for fav in existing_favs:
-                if fav.get('folder') != folder_name and fav.get('folder') != "Sites Gerenciados":
-                    preserved_favs.append(fav)
-            
-            print(f"💾 Preservando {len(preserved_favs)} favoritos não gerenciados")
-            
-            # 5. Cria nova estrutura combinando preservados + novos
-            all_urls = urls.copy()
-            combined_favs = preserved_favs + [
-                {'url': url, 'name': '', 'folder': folder_name} for url in urls
-            ]
-            
-            # 6. Cria estrutura completa
-            bookmarks_data = self.create_bookmarks_structure(all_urls, folder_name)
-            
-            # 7. Salva o arquivo
+            # 5. Upsert: substitui a pasta gerenciada no JSON existente
+            bookmarks_data = self._upsert_managed_folder_in_bookmarks(bookmarks_data, urls, folder_name)
+
+            # 6. Salva o arquivo
             with open(self.bookmarks_file, 'w', encoding='utf-8') as f:
                 json.dump(bookmarks_data, f, indent=2, ensure_ascii=False)
-            
-            # 8. Ajusta permissões
+
+            # 7. Ajusta permissões
             try:
                 uid, gid = self.get_user_ids()
                 os.chown(self.bookmarks_file, uid, gid)
@@ -390,7 +458,7 @@ class ChromiumFavoritesManager:
                 print(f"⚠️ Aviso de permissões: {perm_error}")
             
             print(f"✅ Favoritos atualizados com sucesso")
-            return True, f"Favoritos atualizados: {len(urls)} URLs adicionadas, {len(preserved_favs)} preservadas"
+            return True, f"Favoritos atualizados: {len(urls)} URLs definidas, {preserved_count} preservadas"
             
         except Exception as e:
             print(f"❌ Erro ao atualizar favoritos: {e}")
@@ -432,7 +500,8 @@ favorites_manager = ChromiumFavoritesManager()
 # ========== FUNÇÕES AUXILIARES ==========
 def check_auth():
     auth = session.get('authenticated')
-    print(f"DEBUG check_auth: session={dict(session)}, authenticated={auth}", flush=True)
+    if os.environ.get('DEBUG_AUTH', '').lower() == 'true':
+        print(f"DEBUG check_auth: authenticated={auth}", flush=True)
     return auth
 
 def get_cpu_usage():
@@ -592,36 +661,38 @@ def cleanup_chromium_locks():
             'SingletonLock.*',
             'SingletonSocket.*'
         ]
-        
+
+        import glob
+
+        def safe_remove(path):
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                # Fallback caso o processo não tenha permissão
+                subprocess.run(
+                    ['sudo', '-u', 'administrador', 'rm', '-f', path],
+                    stderr=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL
+                )
+
         for pattern in lock_patterns:
-            # Remove do diretório raiz do profile
-            subprocess.run([
-                'sudo', '-u', 'administrador',
-                'rm', '-f',
-                f'{profile_dir}/{pattern}'
-            ], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-            
+            # Remove do diretório raiz do profile (inclui expansão de glob)
+            for target in glob.glob(os.path.join(profile_dir, pattern)):
+                safe_remove(target)
+
             # Remove do diretório Default
-            subprocess.run([
-                'sudo', '-u', 'administrador',
-                'rm', '-f',
-                f'{profile_dir}/Default/{pattern}'
-            ], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-        
+            for target in glob.glob(os.path.join(profile_dir, 'Default', pattern)):
+                safe_remove(target)
+
         # 3. Remove locks do perfil padrão (segurança extra)
-        subprocess.run([
-            'sudo', '-u', 'administrador',
-            'rm', '-f',
-            f'{default_profile_dir}/Singleton*'
-        ], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-        
+        for target in glob.glob(os.path.join(default_profile_dir, 'Singleton*')):
+            safe_remove(target)
+
         # 4. Remove locks do diretório de cache
         if os.path.exists(cache_dir):
-            subprocess.run([
-                'sudo', '-u', 'administrador',
-                'rm', '-f',
-                f'{cache_dir}/Singleton*'
-            ], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+            for target in glob.glob(os.path.join(cache_dir, 'Singleton*')):
+                safe_remove(target)
         
         # 5. Remove arquivos de lock específicos do chromium-profile
         specific_locks = [
@@ -643,7 +714,10 @@ def cleanup_chromium_locks():
         try:
             check = subprocess.run([
                 'sudo', '-u', 'administrador',
-                'find', profile_dir, '-name', "Singleton*", '-o', '-name', ".com.google.Chrome*"
+                'find',
+                profile_dir,
+                '(', '-name', "Singleton*", '-o', '-name', ".com.google.Chrome*",
+                ')'
             ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5)
             
             if check.stdout and check.stdout.strip():
@@ -890,13 +964,14 @@ def get_connection_detail(name):
         if device:
             ip_result = run_nmcli(['-t', '-f', 'IP4.ADDRESS', 'dev', 'show', device], capture_output=True)
             if ip_result.returncode == 0:
-                for line in ip_result.stdout.strip().split('\n'):
-                    if line and ':' in line:
-                        _, ip = line.split(':', 1)
-                        ip = ip.strip()
-                        if ip:
-                            ip4 = ip.split('/')[0]
-                            break
+                # Com -t/-f apenas IP4.ADDRESS, a saída costuma ser uma linha com o valor (ex: 192.168.1.10/24)
+                ip4_raw = ''
+                for line in (ip_result.stdout or '').splitlines():
+                    if line and line.strip():
+                        ip4_raw = line.strip()
+                        break
+                if ip4_raw:
+                    ip4 = ip4_raw.split('/')[0]
         
         # Parse connection data in a structured way
         conn_data = {
@@ -1145,6 +1220,33 @@ def shutdown_now():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
+@app.route('/api/system/restart-service', methods=['POST'])
+def restart_service():
+    """
+    Reinicia o serviço forçando a finalização do processo Flask.
+    O systemd com Restart=always é responsável por subir novamente a aplicação.
+    """
+    if not check_auth():
+        return jsonify({'error': 'Não autenticado'}), 401
+
+    try:
+        def do_restart():
+            # Pequena folga para o client receber a resposta HTTP
+            time.sleep(0.5)
+            try:
+                add_event("🔄 Reinício do serviço solicitado via API (systemd irá reiniciar o processo).")
+            except Exception:
+                pass
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        t = threading.Thread(target=do_restart, daemon=True)
+        t.start()
+
+        return jsonify({'success': True, 'message': 'Reiniciando o serviço...'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 # ========== API - REDE ==========
 @app.route('/api/network/current')
 def get_network_info():
@@ -1189,30 +1291,34 @@ def get_network_info():
                     'state': connection_state,
                     'active': active.strip()
                 })
-        # Use fields supported by nmcli for device/general info and IP addresses
-        ip_result = run_nmcli(['-t', '-f', 'GENERAL.DEVICE,IP4.ADDRESS,IP6.ADDRESS', 'dev', 'show'])
-        
-        # Build device->IP mapping
+
+        # Build device->IP mapping (robusto para IPv6, sem depender de separadores ':')
+        device_set = {c.get('device') for c in connections if c.get('device')}
         device_ips = {}
-        if ip_result.returncode == 0:
-            current_device = None
-            for line in ip_result.stdout.strip().split('\n'):
-                if not line or ':' not in line:
-                    continue
-                key, val = line.split(':', 1)
-                key = key.strip(); val = val.strip()
-                if key.startswith('GENERAL.DEVICE'):
-                    current_device = val
-                    device_ips[current_device] = {}
-                elif key.startswith('IP4.ADDRESS') and current_device:
-                    if val and not device_ips[current_device].get('ip4'):
-                        # Take only the first IP if multiple
-                        device_ips[current_device]['ip4'] = val.split('/')[0] if val else ''
-                elif key.startswith('IP6.ADDRESS') and current_device:
-                    if val and not device_ips[current_device].get('ip6'):
-                        # Take only the first IP if multiple
-                        device_ips[current_device]['ip6'] = val.split('/')[0] if val else ''
-        
+
+        for dev in device_set:
+            device_ips[dev] = {'ip4': '', 'ip6': ''}
+
+            ip4_res = run_nmcli(['-t', '-f', 'IP4.ADDRESS', 'dev', 'show', dev], capture_output=True)
+            if ip4_res.returncode == 0:
+                ip4_raw = ''
+                for line in (ip4_res.stdout or '').splitlines():
+                    if line and line.strip():
+                        ip4_raw = line.strip()
+                        break
+                if ip4_raw:
+                    device_ips[dev]['ip4'] = ip4_raw.split('/')[0]
+
+            ip6_res = run_nmcli(['-t', '-f', 'IP6.ADDRESS', 'dev', 'show', dev], capture_output=True)
+            if ip6_res.returncode == 0:
+                ip6_raw = ''
+                for line in (ip6_res.stdout or '').splitlines():
+                    if line and line.strip():
+                        ip6_raw = line.strip()
+                        break
+                if ip6_raw:
+                    device_ips[dev]['ip6'] = ip6_raw.split('/')[0]
+
         # Add IP information to each connection
         for conn in connections:
             device = conn.get('device', '')
@@ -1248,7 +1354,8 @@ def scan_wifi():
         networks = []
         for line in result.stdout.strip().split('\n'):
             if line:
-                parts = line.split(':')
+                # Segurança/SSID pode ter ':'; limitar split evita quebrar o parse
+                parts = line.split(':', 2)
                 if len(parts) >= 3:
                     ssid, signal, security = parts[0], parts[1], parts[2]
                     networks.append({'ssid': ssid, 'signal': signal, 'security': security})
@@ -1260,12 +1367,15 @@ def scan_wifi():
 def configure_network():
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
-    data = request.json
+    data = request.json or {}
     connection_type = data.get('type')
     connection_name = data.get('name')
     ip_type = data.get('ip_type', 'dhcp')
     
     try:
+        if not connection_type or not connection_name:
+            return jsonify({'error': 'Parâmetros inválidos'}), 400
+
         # Handle toggle (ativar/desativar)
         if connection_type == 'toggle':
             action = data.get('action', 'up')
@@ -1311,8 +1421,9 @@ def configure_network():
             check_result = run_nmcli(['connection', 'show', connection_name], capture_output=True)
             
             if check_result.returncode == 0:
-                # Connection exists, just modify IP settings
-                result = run_nmcli(['connection', 'modify', connection_name])
+                # Connection exists: apenas mantém o "result" para seguir o fluxo
+                # (as configurações de IP serão aplicadas abaixo na mesma rota)
+                result = check_result
             else:
                 # Create new connection
                 result = run_nmcli(['connection', 'add', 'type', 'ethernet', 
@@ -1798,6 +1909,9 @@ def diagnostic_wrappers():
 def diagnostic_session():
     """Debug endpoint: mostra o conteúdo da sessão e cookies recebidos (apenas local)."""
     try:
+        if not check_auth():
+            # Mantém o endpoint mais seguro: exige autenticação
+            return jsonify({'error': 'Não autenticado'}), 401
         sess = dict(session)
         cookies = {k: v for k, v in request.cookies.items()}
         return jsonify({'success': True, 'session': sess, 'cookies': cookies})
@@ -1807,15 +1921,16 @@ def diagnostic_session():
 # ========== PÁGINAS WEB (ROTAS SIMPLES) ==========
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    """Rota de login simples. Usa `ADMIN_PASSWORD` no ambiente ou 'admin' por padrão."""
+    """Rota de login simples. Usa `ADMIN_PASSWORD` no ambiente ou 'raspberry' por padrão."""
     if request.method == 'POST':
         # aceita formulário ou JSON
         password = request.form.get('password') if request.form else None
         if not password and request.is_json:
             password = (request.get_json() or {}).get('password')
 
-        # Por padrão, use a senha esperada para o usuário 'administrador'
-        admin_pass = os.environ.get('ADMIN_PASSWORD', 'sil123')
+        # O instalador cria o usuário 'administrador' com senha padrão 'raspberry'
+        # (e recomenda alterar após o primeiro login).
+        admin_pass = os.environ.get('ADMIN_PASSWORD', 'raspberry')
         if password and password == admin_pass:
             session['authenticated'] = True
             return redirect(url_for('index'))
