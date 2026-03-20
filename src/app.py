@@ -201,14 +201,22 @@ os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(CONFIG_DIR, exist_ok=True)
 BROWSER_LOG = os.path.join(LOG_DIR, "browser-launch.log")
 
+# Perfil Chromium (autostart, favoritos, locks). Override: PI_MANAGER_CHROMIUM_USER_DATA_DIR
+_DEFAULT_CHROMIUM_USER_DATA_DIR = "/home/administrador/chromium-profile"
+_CHROMIUM_UDD_OVERRIDE = os.environ.get("PI_MANAGER_CHROMIUM_USER_DATA_DIR", "").strip()
+CHROMIUM_USER_DATA_DIR = (
+    os.path.normpath(os.path.abspath(os.path.expanduser(_CHROMIUM_UDD_OVERRIDE)))
+    if _CHROMIUM_UDD_OVERRIDE
+    else _DEFAULT_CHROMIUM_USER_DATA_DIR
+)
+
 # ========== GERENCIADOR DE FAVORITOS (INLINE) ==========
 class ChromiumFavoritesManager:
     def __init__(self, username='administrador'):
         self.username = username
         self.home_dir = Path(f'/home/{username}')
-        
-        # Usa o diretório de perfil personalizado
-        self.chromium_profile_dir = self.home_dir / 'chromium-profile'
+        # Mesmo caminho que --user-data-dir no autostart (env PI_MANAGER_CHROMIUM_USER_DATA_DIR)
+        self.chromium_profile_dir = Path(CHROMIUM_USER_DATA_DIR)
         # Alias consistente usado pelo restante do código
         self.chromium_dir = self.chromium_profile_dir
         # Perfil ativo atual
@@ -810,7 +818,7 @@ def cleanup_chromium_locks():
     try:
         add_event("🧹 Iniciando limpeza de locks do Chromium...")
         
-        profile_dir = '/home/administrador/chromium-profile'
+        profile_dir = CHROMIUM_USER_DATA_DIR
         default_profile_dir = '/home/administrador/.config/chromium'
         cache_dir = '/home/administrador/.cache/chromium'
         
@@ -863,7 +871,7 @@ def cleanup_chromium_locks():
             for target in glob.glob(os.path.join(cache_dir, 'Singleton*')):
                 safe_remove(target)
         
-        # 5. Remove arquivos de lock específicos do chromium-profile
+        # 5. Remove locks explícitos no perfil gerido (CHROMIUM_USER_DATA_DIR)
         specific_locks = [
             f'{profile_dir}/SingletonLock',
             f'{profile_dir}/SingletonSocket',
@@ -953,11 +961,11 @@ def _chromium_is_running() -> bool:
 
 def _chromium_managed_profile_running() -> bool:
     """
-    True se já existe processo Chromium usando o perfil /home/administrador/chromium-profile.
+    True se já existe processo Chromium usando o perfil gerido (CHROMIUM_USER_DATA_DIR).
     Evita segunda abertura no boot (ex.: autostart legado + serviço) e evita cleanup de locks
     com o browser aberto.
     """
-    marker = "chromium-profile"
+    marker = CHROMIUM_USER_DATA_DIR
     try:
         r = subprocess.run(
             ["pgrep", "-af", "chromium"],
@@ -1010,7 +1018,7 @@ def open_browser_with_urls():
         if _chromium_managed_profile_running():
             add_event(
                 "ℹ️ Chromium já está em execução com o perfil gerenciado "
-                "(chromium-profile). Pulando nova abertura e limpeza de locks."
+                f"({CHROMIUM_USER_DATA_DIR}). Pulando nova abertura e limpeza de locks."
             )
             add_event("🔄 Sincronizando favoritos (instância já aberta)...")
             success, message = sync_chromium_favorites()
@@ -1040,7 +1048,7 @@ def open_browser_with_urls():
             'sudo', '-u', 'administrador',
             'env', 'DISPLAY=:0',
             'chromium-browser' if os.path.exists('/usr/bin/chromium-browser') else 'chromium',
-            '--user-data-dir=/home/administrador/chromium-profile',
+            f'--user-data-dir={CHROMIUM_USER_DATA_DIR}',
             '--no-first-run',
             '--start-maximized',
             '--ignore-certificate-errors',
@@ -2141,7 +2149,7 @@ def restart_browser():
                 "env",
                 "DISPLAY=:0",
                 chromium_bin,
-                "--user-data-dir=/home/administrador/chromium-profile",
+                f"--user-data-dir={CHROMIUM_USER_DATA_DIR}",
                 "--ignore-certificate-errors",
                 "--start-maximized",
                 "--no-first-run",

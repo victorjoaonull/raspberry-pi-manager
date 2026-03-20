@@ -92,6 +92,8 @@ fi
 # ========== VARIÁVEIS DE CONFIGURAÇÃO ==========
 # Permite sobrescrever o diretório de instalação via variável de ambiente
 INSTALL_DIR="${INSTALL_DIR:-/home/administrador/raspberry-pi-manager}"
+# Perfil Chromium (alinhado com PI_MANAGER_CHROMIUM_USER_DATA_DIR no serviço / app.py)
+PI_MANAGER_CHROMIUM_USER_DATA_DIR="${PI_MANAGER_CHROMIUM_USER_DATA_DIR:-/home/administrador/chromium-profile}"
 VENV_DIR="$INSTALL_DIR/venv"
 SERVICE_NAME="${SERVICE_NAME:-raspberry-pi-manager}"
 GIT_REPO="${GIT_REPO:-https://github.com/victorjoaonull/raspberry-pi-manager.git}"
@@ -438,6 +440,9 @@ SERVICE_NAME=raspberry-pi-manager
 # Diretório da app (update_app.sh em /usr/local/bin usa esta linha)
 #APP_INSTALL_DIR=/home/administrador/raspberry-pi-manager
 
+# Perfil Chromium (autostart, favoritos, atalho na área de trabalho)
+#PI_MANAGER_CHROMIUM_USER_DATA_DIR=/home/administrador/chromium-profile
+
 # Logs da app (browser-launch, etc.); por defeito usa INSTALL_DIR/logs
 #PI_MANAGER_LOG_DIR=/home/administrador/raspberry-pi-manager/logs
 
@@ -461,6 +466,10 @@ fi
 if [ -f "$ENV_FILE" ] && ! grep -q '^APP_INSTALL_DIR=' "$ENV_FILE" 2>/dev/null; then
     echo "APP_INSTALL_DIR=$INSTALL_DIR" >> "$ENV_FILE"
     echo -e "${GREEN}✅ APP_INSTALL_DIR registrado em $ENV_FILE (atualizações automáticas).${NC}"
+fi
+if [ -f "$ENV_FILE" ] && ! grep -q '^PI_MANAGER_CHROMIUM_USER_DATA_DIR=' "$ENV_FILE" 2>/dev/null; then
+    echo "PI_MANAGER_CHROMIUM_USER_DATA_DIR=$PI_MANAGER_CHROMIUM_USER_DATA_DIR" >> "$ENV_FILE"
+    echo -e "${GREEN}✅ PI_MANAGER_CHROMIUM_USER_DATA_DIR registrado em $ENV_FILE.${NC}"
 fi
 
 # ========== CONFIGURAR SERVIÇO SYSTEMD ==========
@@ -551,9 +560,9 @@ raspi-config nonint do_boot_behaviour B4
 
 # ========== CONFIGURAR CHROMIUM ==========
 echo -e "${BLUE}[13/12]${NC} Configurando Chromium..."
-# Criar diretório de perfil personalizado
-mkdir -p /home/administrador/chromium-profile
-chown -R administrador:administrador /home/administrador/chromium-profile
+# Criar diretório de perfil personalizado (pasta configurável)
+mkdir -p "$PI_MANAGER_CHROMIUM_USER_DATA_DIR"
+chown -R administrador:administrador "$PI_MANAGER_CHROMIUM_USER_DATA_DIR"
 
 # Inicializar git no diretório se não for clone do GitHub
 if [ "$CLONE_FROM_GITHUB" != "true" ] && ! [ -d "$INSTALL_DIR/.git" ]; then
@@ -618,10 +627,10 @@ Version=1.0
 Type=Application
 Name=Chromium (Pi Manager)
 Name[pt_BR]=Chromium (Pi Manager)
-Comment=Mesmo perfil e flags do Raspberry Pi Manager (/home/administrador/chromium-profile)
+Comment=Mesmo perfil e flags do Raspberry Pi Manager ($PI_MANAGER_CHROMIUM_USER_DATA_DIR)
 Comment[pt_BR]=Mesmo perfil do gerenciador: autostart, favoritos e kiosk
 TryExec=${CHROMIUM_BIN}
-Exec=env DISPLAY=:0 ${CHROMIUM_BIN} --user-data-dir=/home/administrador/chromium-profile --no-first-run --start-maximized --ignore-certificate-errors --noerrdialogs --disable-session-crashed-bubble --disable-single-process --disable-features=ChromeWhatsNewUI --disable-features=SingleProcess --disable-features=ProcessPerSite --disable-gpu --disable-dbus --disable-background-networking --disable-sync --disable-default-apps --disable-extensions --disable-component-extensions-with-background-pages --disable-client-side-phishing-detection --disable-crash-reporter --disable-ipc-flooding-protection --disable-prompt-on-repost --disable-renderer-backgrounding --disable-hang-monitor --no-sandbox --test-type --force-device-scale-factor=1 %U
+Exec=env DISPLAY=:0 ${CHROMIUM_BIN} --user-data-dir=$PI_MANAGER_CHROMIUM_USER_DATA_DIR --no-first-run --start-maximized --ignore-certificate-errors --noerrdialogs --disable-session-crashed-bubble --disable-single-process --disable-features=ChromeWhatsNewUI --disable-features=SingleProcess --disable-features=ProcessPerSite --disable-gpu --disable-dbus --disable-background-networking --disable-sync --disable-default-apps --disable-extensions --disable-component-extensions-with-background-pages --disable-client-side-phishing-detection --disable-crash-reporter --disable-ipc-flooding-protection --disable-prompt-on-repost --disable-renderer-backgrounding --disable-hang-monitor --no-sandbox --test-type --force-device-scale-factor=1 %U
 Icon=chromium
 Terminal=false
 Categories=Network;WebBrowser;

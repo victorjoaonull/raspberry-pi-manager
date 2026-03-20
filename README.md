@@ -53,7 +53,7 @@ O script irá:
 - ✅ Instalar o serviço systemd
 - ✅ Configurar auto-login gráfico
 - ✅ Instalar e configurar Chromium
-- ✅ Criar atalho **Chromium-Raspberry.desktop** na área de trabalho (`xdg-user-dir DESKTOP`): mesmo perfil `/home/administrador/chromium-profile` e mesmas flags base que o autostart do serviço (marcado como confiável para duplo clique quando `gio` estiver disponível)
+- ✅ Criar atalho **Chromium-Raspberry.desktop** na área de trabalho (`xdg-user-dir DESKTOP`): mesmo perfil que o serviço (por omissão `/home/administrador/chromium-profile`; configurável com `PI_MANAGER_CHROMIUM_USER_DATA_DIR` antes do `install.sh` ou em `/etc/default/...`) e mesmas flags base que o autostart (marcado como confiável para duplo clique quando `gio` estiver disponível)
 - ✅ Criar script de atualização automática
 
 ### 4. Acesse a aplicação
@@ -162,6 +162,7 @@ O arquivo `.github/workflows/deploy.yml` já está configurado. A cada push para
 | `WEBHOOK_SECRET` | Secret HMAC do GitHub (obrigatório para auto-update via webhook). |
 | `APP_INSTALL_DIR` | Diretório da aplicação (usado por `update_app.sh` em `/usr/local/bin` e na lista segura do webhook). |
 | `PI_MANAGER_INSTALL_DIR` | Opcional; mesmo papel que `APP_INSTALL_DIR` se precisar de um segundo nome. |
+| `PI_MANAGER_CHROMIUM_USER_DATA_DIR` | Pasta do perfil Chromium (`--user-data-dir`). Por omissão: `/home/administrador/chromium-profile`. Use outro caminho (ex. `.../chromium-profile-padrao`) após clonar imagem ou mudar hostname para evitar bloqueio SingletonLock. |
 | `PI_MANAGER_LOG_DIR` | Onde gravar logs de ficheiro da app (ex.: `browser-launch.log`). Por omissão: `<pasta da app>/logs`. |
 | `SESSION_COOKIE_SECURE` | `true` / `1` / `yes` se a UI for servida só por HTTPS (cookies `Secure`). |
 | `SESSION_COOKIE_SAMESITE` | Valor do SameSite (ex.: `Lax`, `Strict`); por omissão `Lax`. |
