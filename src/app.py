@@ -26,8 +26,24 @@ import subprocess
 _PAM_IMPORT_ERROR: Optional[Exception] = None
 
 
+def _inject_debian_dist_packages_into_syspath() -> None:
+    """
+    Em venv no Debian Trixie/Bookworm, às vezes `python3-pam` (apt) não aparece no sys.path
+    mesmo com --system-site-packages → ModuleNotFoundError: pam. Coloca dist-packages do
+    sistema no *final* do path (Flask etc. do venv continuam prioritários).
+    """
+    vers = f"{sys.version_info.major}.{sys.version_info.minor}"
+    for p in (
+        f"/usr/lib/python{vers}/dist-packages",
+        "/usr/lib/python3/dist-packages",
+    ):
+        if os.path.isdir(p) and p not in sys.path:
+            sys.path.append(p)
+
+
 def _load_pam_module():
     global _PAM_IMPORT_ERROR
+    _inject_debian_dist_packages_into_syspath()
     try:
         import pam as m  # type: ignore
 
@@ -86,7 +102,7 @@ def get_pam_module():
 ADMIN_USERNAME = 'administrador'
 
 # Versão da Aplicação
-APP_VERSION = "2.4.1"
+APP_VERSION = "2.4.2"
 
 app = Flask(__name__)
 # JSON com caracteres Unicode legíveis nos endpoints (Flask 2.2+)

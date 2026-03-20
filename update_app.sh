@@ -74,10 +74,26 @@ if command -v apt-get >/dev/null 2>&1; then
     echo "[$(date -Iseconds)] apt: python3-pam garantido" >>"$LOGFILE"
 fi
 
-# --- Git ---
+# --- Git (repo vazio pós install: sem HEAD até primeiro commit / pull) ---
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    git fetch --all --prune
-    git reset --hard "origin/$(git rev-parse --abbrev-ref HEAD)"
+    git fetch --all --prune || true
+    if git rev-parse -q --verify HEAD >/dev/null 2>&1; then
+        head_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+        if git show-ref --verify --quiet "refs/remotes/origin/${head_branch}"; then
+            git reset --hard "origin/${head_branch}" || true
+        elif git show-ref --verify --quiet refs/remotes/origin/main; then
+            git checkout -B main origin/main || true
+        else
+            echo "[$(date -Iseconds)] WARN: sem origin/${head_branch} nem origin/main" >>"$LOGFILE"
+        fi
+    else
+        echo "[$(date -Iseconds)] Git: sem commits locais; alinhando a origin/main se existir" >>"$LOGFILE"
+        if git show-ref --verify --quiet refs/remotes/origin/main; then
+            git checkout -B main origin/main || true
+        elif git show-ref --verify --quiet refs/remotes/origin/master; then
+            git checkout -B master origin/master || true
+        fi
+    fi
     echo "[$(date -Iseconds)] Git updated" >>"$LOGFILE"
 else
     echo "[$(date -Iseconds)] Not a git repo, skipping git pull" >>"$LOGFILE"

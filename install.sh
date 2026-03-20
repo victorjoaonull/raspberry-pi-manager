@@ -214,6 +214,13 @@ chown -R administrador:administrador "$INSTALL_DIR"
 echo -e "${BLUE}[6/12]${NC} Criando ambiente virtual Python..."
 sudo -u administrador python3 -m venv "$VENV_DIR" --system-site-packages
 
+# Debian: forçar herança de site-packages do sistema (python3-pam no apt)
+PYVENV_CFG="$VENV_DIR/pyvenv.cfg"
+if [ -f "$PYVENV_CFG" ] && grep -q '^include-system-site-packages = false' "$PYVENV_CFG" 2>/dev/null; then
+    sed -i 's/^include-system-site-packages = false/include-system-site-packages = true/' "$PYVENV_CFG"
+    echo -e "${GREEN}✅ pyvenv.cfg: include-system-site-packages=true (corrigido)${NC}"
+fi
+
 # ========== INSTALAR DEPENDÊNCIAS PYTHON ==========
 echo -e "${BLUE}[7/12]${NC} Instalando Python requirements..."
 sudo -u administrador "$VENV_DIR/bin/pip" install --upgrade pip
@@ -463,6 +470,10 @@ if [ ! -f "$PYTHON_PATH" ]; then
         echo -e "${RED}❌ Erro ao criar venv${NC}"
         exit 1
     }
+    PYVENV_CFG="$INSTALL_DIR/venv/pyvenv.cfg"
+    if [ -f "$PYVENV_CFG" ] && grep -q '^include-system-site-packages = false' "$PYVENV_CFG" 2>/dev/null; then
+        sed -i 's/^include-system-site-packages = false/include-system-site-packages = true/' "$PYVENV_CFG"
+    fi
 fi
 
 cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
@@ -532,8 +543,11 @@ if [ "$CLONE_FROM_GITHUB" != "true" ] && ! [ -d "$INSTALL_DIR/.git" ]; then
     echo -e "${BLUE}📦 Inicializando repositório git local...${NC}"
     cd "$INSTALL_DIR"
     sudo -u administrador git init
-    sudo -u administrador git remote add origin "$GIT_REPO"
+    sudo -u administrador git remote add origin "$GIT_REPO" 2>/dev/null || true
     sudo -u administrador git branch -M main
+    # Commit vazio para existir HEAD (update_app.sh / git reset não falham)
+    sudo -u administrador git -c user.email=pi-manager@local -c user.name="Pi Manager" \
+        commit --allow-empty -m "chore: base da instalação local" 2>/dev/null || true
     echo "✅ Git inicializado; execute 'git pull origin main' para sincronizar com o GitHub"
 fi
 
