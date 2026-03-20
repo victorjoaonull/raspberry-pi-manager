@@ -255,7 +255,7 @@ sudo systemctl stop raspberry-pi-manager
 # Iniciar serviço
 sudo systemctl start raspberry-pi-manager
 
-# Executar atualização manual
+# Executar atualização manual (instala python3-pam, pip no venv, git pull, reinicia o serviço)
 sudo /usr/local/bin/update_app.sh
 
 # Ver logs de atualização

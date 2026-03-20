@@ -2261,8 +2261,8 @@ def login():
                 'login.html',
                 error=(
                     'Módulo PAM não disponível neste Python. '
-                    'No Raspberry: sudo apt install python3-pam && sudo systemctl restart raspberry-pi-manager. '
-                    'Se o venv não enxergar o sistema: pip install python-pam ou recrie o venv com --system-site-packages.'
+                    'Execute no Pi: sudo /usr/local/bin/update_app.sh (ou reinstale com sudo ./install.sh). '
+                    'Isso instala python3-pam e atualiza o venv automaticamente.'
                 ),
             )
 
@@ -2378,8 +2378,13 @@ def webhook():
     # Run update script in background so we respond quickly
     def run_update():
         try:
-            repo_root = os.path.abspath(os.path.join(app.root_path, '..'))
-            script_path = os.path.join(repo_root, 'update_app.sh')
+            # Instalação: app.py e update_app.sh na mesma pasta (INSTALL_DIR).
+            # Desenvolvimento: app em src/ e update na raiz do repositório.
+            script_path = os.path.join(app.root_path, 'update_app.sh')
+            if not os.path.isfile(script_path):
+                alt = os.path.abspath(os.path.join(app.root_path, '..', 'update_app.sh'))
+                if os.path.isfile(alt):
+                    script_path = alt
             add_event('Webhook validated — running update script')
             # Use bash to run even if file is not executable
             proc = subprocess.run(['/bin/bash', script_path], capture_output=True, text=True, timeout=600)

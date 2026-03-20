@@ -361,10 +361,22 @@ touch /var/log/pi-manager-hostname.log || true
 chown root:adm /var/log/pi-manager-hostname.log || true
 chmod 640 /var/log/pi-manager-hostname.log || true
 
-# Escreve sudoers restrito apontando apenas para o wrapper (valide com visudo)
+# Wrapper para apt instalar python3-pam (update_app.sh / webhook rodam como administrador)
+cat > /usr/local/bin/pi-manager-ensure-deps << 'ENSUREOF'
+#!/bin/bash
+set -e
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq python3-pam
+exit 0
+ENSUREOF
+chmod 750 /usr/local/bin/pi-manager-ensure-deps
+chown root:root /usr/local/bin/pi-manager-ensure-deps
 
-cat > /etc/sudoers.d/pi-manager << 'EOF'
-administrador ALL=(root) NOPASSWD: /usr/local/bin/pi-manager-nmcli, /usr/local/bin/pi-manager-chpasswd, /usr/local/bin/pi-manager-hostname
+# Escreve sudoers restrito apontando apenas para os wrappers (valide com visudo)
+
+cat > /etc/sudoers.d/pi-manager << EOF
+administrador ALL=(root) NOPASSWD: /usr/local/bin/pi-manager-nmcli, /usr/local/bin/pi-manager-chpasswd, /usr/local/bin/pi-manager-hostname, /usr/local/bin/pi-manager-ensure-deps, /usr/bin/systemctl restart ${SERVICE_NAME}
 EOF
 chown root:root /etc/sudoers.d/pi-manager
 chmod 440 /etc/sudoers.d/pi-manager
@@ -402,6 +414,9 @@ WEBHOOK_SECRET=
 # Nome do serviço systemd para reiniciar após atualização
 SERVICE_NAME=raspberry-pi-manager
 
+# Diretório da app (update_app.sh em /usr/local/bin usa esta linha)
+#APP_INSTALL_DIR=/home/administrador/raspberry-pi-manager
+
 # Outras variáveis opcionais
 #DEBUG=false
 #FLASK_HOST=0.0.0.0
@@ -412,6 +427,12 @@ ENVEOF
     echo "✅ Criado $ENV_FILE (configure WEBHOOK_SECRET nele)"
 else
     echo "ℹ️  $ENV_FILE já existe; preservando."
+fi
+
+# Caminho da instalação para update_app.sh (quando instalado em /usr/local/bin)
+if [ -f "$ENV_FILE" ] && ! grep -q '^APP_INSTALL_DIR=' "$ENV_FILE" 2>/dev/null; then
+    echo "APP_INSTALL_DIR=$INSTALL_DIR" >> "$ENV_FILE"
+    echo -e "${GREEN}✅ APP_INSTALL_DIR registrado em $ENV_FILE (atualizações automáticas).${NC}"
 fi
 
 # ========== CONFIGURAR SERVIÇO SYSTEMD ==========
