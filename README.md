@@ -239,6 +239,28 @@ Possíveis problemas:
    tail -f /home/administrador/raspberry-pi-manager/update_app.log
    ```
 
+### Login: "PAM nao disponivel" ou acentos quebrados (MÃ³dulo / usuÃ¡rio)
+
+**PAM**
+
+1. No Pi (SSH), rode o script de correção (instalador copia para a pasta da app):
+   ```bash
+   sudo bash /home/administrador/raspberry-pi-manager/scripts/fix-pam-on-pi.sh
+   ```
+   Ou manualmente:
+   ```bash
+   sudo apt install -y python3-pam
+   sudo -u administrador /home/administrador/raspberry-pi-manager/venv/bin/pip uninstall -y python-pam
+   sudo systemctl restart raspberry-pi-manager
+   ```
+2. Confira o erro real: `journalctl -u raspberry-pi-manager -b -n 40 --no-pager`
+3. O venv deve ter sido criado com `--system-site-packages` (o `install.sh` já faz isso).
+
+**Acentos (charset)**
+
+- Acesse direto `http://IP:5000` (sem proxy) ou configure nginx com `charset utf-8;`.
+- Atualize a página com Ctrl+F5. A aplicação força `Content-Type: ... charset=utf-8`.
+
 ### Chromium não abre automaticamente
 
 O Chromium com **URLs de `config/autostart.conf`** é aberto **uma vez** pelo serviço `raspberry-pi-manager` (thread em `startup_tasks` → `open_browser_with_urls`). Não use um segundo `.desktop` em `~/.config/autostart/` para o mesmo perfil (`chromium-profile`), senão há risco de SingletonLock / duas aberturas.

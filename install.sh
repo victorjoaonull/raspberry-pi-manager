@@ -202,6 +202,11 @@ else
         cp "$REPO_DIR/uninstall.sh" "$INSTALL_DIR/"
         chmod +x "$INSTALL_DIR/uninstall.sh"
     fi
+    if [ -f "$REPO_DIR/scripts/fix-pam-on-pi.sh" ] && [ "$(realpath "$REPO_DIR")" != "$(realpath "$INSTALL_DIR")" ]; then
+        mkdir -p "$INSTALL_DIR/scripts"
+        cp "$REPO_DIR/scripts/fix-pam-on-pi.sh" "$INSTALL_DIR/scripts/"
+        chmod +x "$INSTALL_DIR/scripts/fix-pam-on-pi.sh"
+    fi
 fi
 chown -R administrador:administrador "$INSTALL_DIR"
 

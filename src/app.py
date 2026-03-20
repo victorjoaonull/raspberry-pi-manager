@@ -3,6 +3,7 @@ from flask import Flask, render_template, request, jsonify, session, redirect, u
 from urllib.parse import urlparse
 import subprocess
 import os
+import sys
 import json
 import re
 import threading
@@ -41,6 +42,7 @@ def _load_pam_module():
 
         for pkg in (
             "/usr/lib/python3/dist-packages/pam/__init__.py",
+            "/usr/lib/python3.14/dist-packages/pam/__init__.py",
             "/usr/lib/python3.13/dist-packages/pam/__init__.py",
             "/usr/lib/python3.12/dist-packages/pam/__init__.py",
         ):
@@ -59,11 +61,32 @@ def _load_pam_module():
 
 
 pam_module = _load_pam_module()
+_PAM_RETRY_DONE = False
+
+
+def get_pam_module():
+    """
+    Retorna o módulo pam. Se o arranque falhou, tenta uma vez limpar o cache de import
+    (útil após `pip uninstall python-pam` sem reiniciar o serviço).
+    """
+    global pam_module, _PAM_IMPORT_ERROR, _PAM_RETRY_DONE
+    if pam_module is not None:
+        return pam_module
+    if not _PAM_RETRY_DONE:
+        _PAM_RETRY_DONE = True
+        for k in list(sys.modules.keys()):
+            if k == "pam" or k.startswith("pam."):
+                del sys.modules[k]
+        pam_module = _load_pam_module()
+        if pam_module is None:
+            print(f"⚠️ Nova tentativa de carregar PAM falhou: {_PAM_IMPORT_ERROR!r}")
+    return pam_module
+
 
 ADMIN_USERNAME = 'administrador'
 
 # Versão da Aplicação
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.4.1"
 
 app = Flask(__name__)
 # JSON com caracteres Unicode legíveis nos endpoints (Flask 2.2+)
@@ -681,10 +704,11 @@ def verify_admin_password(password: str) -> bool:
     Verifica a senha REAL do usuário `administrador` no Raspberry via PAM.
     Compatível com python3-pam (Debian) e python-pam (PyPI 2.x).
     """
-    if pam_module is None:
+    mod = get_pam_module()
+    if mod is None:
         return False
 
-    auth_fn = getattr(pam_module, 'authenticate', None)
+    auth_fn = getattr(mod, 'authenticate', None)
     if not callable(auth_fn):
         return False
 
@@ -2301,15 +2325,21 @@ def login():
             password = (request.get_json() or {}).get('password')
 
         if not password:
-            return render_template('login.html', error='Senha inválida')
+            return render_template('login.html', error='Senha invalida.')
 
-        if pam_module is None:
+        mod = get_pam_module()
+        if mod is None:
+            # Texto sem acentos: continua legivel se o navegador usar charset errado (Mojibake).
             return render_template(
                 'login.html',
                 error=(
-                    'Módulo PAM não disponível neste Python. '
-                    'Execute no Pi: sudo /usr/local/bin/update_app.sh (ou reinstale com sudo ./install.sh). '
-                    'Isso instala python3-pam e atualiza o venv automaticamente.'
+                    "PAM nao carregou neste Python.\n\n"
+                    "No Pi (SSH), execute:\n"
+                    "  sudo apt install -y python3-pam\n"
+                    "  sudo -u administrador /home/administrador/raspberry-pi-manager/venv/bin/pip uninstall -y python-pam\n"
+                    "  sudo systemctl restart raspberry-pi-manager\n\n"
+                    "Ou: sudo /usr/local/bin/update_app.sh\n\n"
+                    "Ver erro exato: journalctl -u raspberry-pi-manager -b -n 30 --no-pager"
                 ),
             )
 
@@ -2317,7 +2347,7 @@ def login():
             session['authenticated'] = True
             return redirect(url_for('index'))
         # mostrar página com erro
-        return render_template('login.html', error='Senha inválida')
+        return render_template('login.html', error='Senha invalida.')
     return render_template('login.html')
 
 
