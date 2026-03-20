@@ -157,6 +157,7 @@ def add_event(msg):
 NMCLI_WRAPPER = '/usr/local/bin/pi-manager-nmcli'
 CHPASS_WRAPPER = '/usr/local/bin/pi-manager-chpasswd'
 HOSTNAME_WRAPPER = '/usr/local/bin/pi-manager-hostname'
+CHROMIUM_LOCKS_WRAPPER = '/usr/local/bin/pi-manager-chromium-clean-locks'
 
 def run_nmcli(args, capture_output=True, text=True, timeout=None):
     """Executa nmcli via wrapper seguro, com fallback para nmcli puro se necessário."""
@@ -666,15 +667,30 @@ def get_memory_usage():
         return "N/A"
 
 def load_autostart_urls():
+    """
+    Lê autostart.conf: ignora linhas vazias e comentários (# ...).
+    Devolve URLs já normalizadas com format_url e validadas com is_valid_url_or_ip.
+    """
     try:
-        if os.path.exists(AUTOSTART_CONFIG):
-            with open(AUTOSTART_CONFIG, 'r') as f:
-                urls = [line.strip() for line in f.readlines() if line.strip()]
-                print(f"📋 URLs carregadas do autostart.conf: {urls}")
-                return urls
-        print("📭 Arquivo autostart.conf não encontrado ou vazio")
-        return []
-        
+        if not os.path.exists(AUTOSTART_CONFIG):
+            print("📭 Arquivo autostart.conf não encontrado ou vazio")
+            return []
+        with open(AUTOSTART_CONFIG, "r", encoding="utf-8", errors="replace") as f:
+            candidates: list[str] = []
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                candidates.append(s)
+        urls: list[str] = []
+        for item in candidates:
+            fu = format_url(item)
+            if is_valid_url_or_ip(fu):
+                urls.append(fu)
+            else:
+                print(f"⚠️ autostart.conf: linha ignorada (URL inválida): {item[:80]!r}")
+        print(f"📋 URLs carregadas do autostart.conf: {urls}")
+        return urls
     except Exception as e:
         print(f"Erro ao carregar URLs: {e}")
         return []
@@ -792,8 +808,8 @@ def sync_chromium_favorites():
             add_event("ℹ️ Nenhuma URL configurada para sincronizar favoritos")
             return False, "Nenhuma URL configurada"
         
-        # Formata URLs
-        formatted_urls = [format_url(url.strip()) for url in urls if url.strip()]
+        # load_autostart_urls já devolve URLs formatadas e válidas
+        formatted_urls = [u for u in urls if u.strip()]
         add_event(f"🔄 URLs para sincronizar: {formatted_urls}")
         
         # Sincroniza em TODOS os perfis
@@ -810,6 +826,61 @@ def sync_chromium_favorites():
         add_event(f"❌ Erro na sincronização de favoritos: {e}")
         return False, str(e)
 
+def _remove_chromium_singleton_files() -> None:
+    """
+    Preferir wrapper do instalador (sudoers NOPASSWD). Senão tenta find+rm como root
+    (só funciona se administrador tiver sudo genérico).
+    """
+    if os.path.isfile(CHROMIUM_LOCKS_WRAPPER) and os.access(CHROMIUM_LOCKS_WRAPPER, os.X_OK):
+        subprocess.run(
+            ["sudo", "-n", CHROMIUM_LOCKS_WRAPPER],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=90,
+        )
+        return
+    _sudo_rm_chromium_singleton_artifacts(CHROMIUM_USER_DATA_DIR)
+    _sudo_rm_chromium_singleton_artifacts("/home/administrador/.config/chromium")
+    _sudo_rm_chromium_singleton_artifacts("/home/administrador/.cache/chromium")
+
+
+def _sudo_rm_chromium_singleton_artifacts(base_dir: str, max_depth: str = "4") -> None:
+    """
+    Apaga Singleton* e .com.google.Chrome* com rm como root.
+    Ficheiros criados por `sudo chromium` (sem -u) pertencem a root e o utilizador
+    da app não consegue apagar — daí locks 'fantasma' e find ainda a listar ficheiros.
+    """
+    if not base_dir or not os.path.isdir(base_dir):
+        return
+    try:
+        subprocess.run(
+            [
+                "sudo",
+                "find",
+                base_dir,
+                "-maxdepth",
+                max_depth,
+                "(",
+                "-name",
+                "Singleton*",
+                "-o",
+                "-name",
+                ".com.google.Chrome*",
+                ")",
+                "-exec",
+                "rm",
+                "-f",
+                "{}",
+                ";",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=60,
+        )
+    except Exception:
+        pass
+
+
 def cleanup_chromium_locks():
     """
     Remove todos os arquivos de lock do Chromium para evitar conflitos de hostname.
@@ -819,75 +890,24 @@ def cleanup_chromium_locks():
         add_event("🧹 Iniciando limpeza de locks do Chromium...")
         
         profile_dir = CHROMIUM_USER_DATA_DIR
-        default_profile_dir = '/home/administrador/.config/chromium'
-        cache_dir = '/home/administrador/.cache/chromium'
+        use_wrapper = os.path.isfile(CHROMIUM_LOCKS_WRAPPER) and os.access(
+            CHROMIUM_LOCKS_WRAPPER, os.X_OK
+        )
+        # 1. Sem wrapper: tenta pkill (só funciona se sudo o permitir). Com wrapper, o pkill é feito lá como root.
+        if not use_wrapper:
+            subprocess.run(
+                ["sudo", "pkill", "-9", "-f", "chromium"],
+                stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+            )
+            time.sleep(1.5)
+
+        # 2–4. Remoção de Singleton* (wrapper sudoers inclui pkill+rm, ou fallback)
+        _remove_chromium_singleton_files()
+        if use_wrapper:
+            time.sleep(0.5)
         
-        # 1. Mata processos do Chromium (força bruta)
-        subprocess.run(['sudo', 'pkill', '-9', '-f', 'chromium'], 
-                      stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-        time.sleep(1.5)
-        
-        # 2. Remove locks do perfil personalizado
-        lock_patterns = [
-            'SingletonLock',
-            'SingletonSocket',
-            'SingletonCookie',
-            'SingletonLock-*',
-            'SingletonSocket-*',
-            '.com.google.Chrome*',
-            'SingletonLock.*',
-            'SingletonSocket.*'
-        ]
-
-        import glob
-
-        def safe_remove(path):
-            try:
-                if os.path.exists(path):
-                    os.remove(path)
-            except Exception:
-                # Fallback caso o processo não tenha permissão
-                subprocess.run(
-                    ['sudo', '-u', 'administrador', 'rm', '-f', path],
-                    stderr=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL
-                )
-
-        for pattern in lock_patterns:
-            # Remove do diretório raiz do profile (inclui expansão de glob)
-            for target in glob.glob(os.path.join(profile_dir, pattern)):
-                safe_remove(target)
-
-            # Remove do diretório Default
-            for target in glob.glob(os.path.join(profile_dir, 'Default', pattern)):
-                safe_remove(target)
-
-        # 3. Remove locks do perfil padrão (segurança extra)
-        for target in glob.glob(os.path.join(default_profile_dir, 'Singleton*')):
-            safe_remove(target)
-
-        # 4. Remove locks do diretório de cache
-        if os.path.exists(cache_dir):
-            for target in glob.glob(os.path.join(cache_dir, 'Singleton*')):
-                safe_remove(target)
-        
-        # 5. Remove locks explícitos no perfil gerido (CHROMIUM_USER_DATA_DIR)
-        specific_locks = [
-            f'{profile_dir}/SingletonLock',
-            f'{profile_dir}/SingletonSocket',
-            f'{profile_dir}/Default/SingletonLock',
-            f'{profile_dir}/Default/SingletonSocket'
-        ]
-        
-        for lock_file in specific_locks:
-            if os.path.exists(lock_file):
-                try:
-                    os.remove(lock_file)
-                except OSError:
-                    subprocess.run(['sudo', 'rm', '-f', lock_file], 
-                                 stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-        
-        # 6. Verifica se ainda existem locks residuais (agora sem capture_output)
+        # 5. Verifica se ainda existem locks residuais (agora sem capture_output)
         try:
             check = subprocess.run([
                 'sudo', '-u', 'administrador',
@@ -1055,9 +1075,7 @@ def open_browser_with_urls():
             '--noerrdialogs',
             '--disable-session-crashed-bubble',
             '--disable-single-process',
-            '--disable-features=ChromeWhatsNewUI',
-            '--disable-features=SingleProcess',
-            '--disable-features=ProcessPerSite',
+            '--disable-features=ChromeWhatsNewUI,SingleProcess,ProcessPerSite',
             '--disable-gpu',
             '--disable-dbus',
             '--disable-background-networking',
@@ -1076,11 +1094,10 @@ def open_browser_with_urls():
             '--force-device-scale-factor=1'
         ]
         
-        # Adiciona URLs
+        # URLs já validadas em load_autostart_urls()
         for url in urls:
             if url.strip():
-                formatted_url = format_url(url.strip())
-                cmd.append(formatted_url)
+                cmd.append(url.strip())
         
         add_event(f"🚀 Executando Chromium com perfil específico...")
 
@@ -2035,8 +2052,7 @@ def force_sync_favorites():
         if not urls:
             return jsonify({'success': True, 'message': 'Nenhuma URL para sincronizar'})
         
-        # 2. Formata URLs
-        formatted_urls = [format_url(url.strip()) for url in urls if url.strip()]
+        formatted_urls = [u.strip() for u in urls if u.strip()]
         
         # 3. Atualiza diretamente (sem preservar)
         success, message = favorites_manager.update_favorites(formatted_urls)
@@ -2159,8 +2175,7 @@ def restart_browser():
                 "--disable-single-process",
                 "--disable-features=SingleProcess",
             ]
-            formatted_urls = [format_url(url) for url in urls if url.strip()]
-            cmd.extend(formatted_urls)
+            cmd.extend(u for u in urls if u.strip())
 
             browser_log_fh = None
             try:
@@ -2300,7 +2315,7 @@ def diagnostic_wrappers():
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
 
-    wrappers = [NMCLI_WRAPPER, CHPASS_WRAPPER, HOSTNAME_WRAPPER]
+    wrappers = [NMCLI_WRAPPER, CHPASS_WRAPPER, HOSTNAME_WRAPPER, CHROMIUM_LOCKS_WRAPPER]
     info = {}
     for w in wrappers:
         item = {
@@ -2437,7 +2452,7 @@ def startup_tasks():
     print("🔄 Sincronizando favoritos do Chromium...")
     urls = load_autostart_urls()
     if urls:
-        formatted_urls = [format_url(url.strip()) for url in urls if url.strip()]
+        formatted_urls = [u.strip() for u in urls if u.strip()]
         success, message = favorites_manager.sync_favorites_with_config(formatted_urls)
         if success:
             print(f"✅ {message}")

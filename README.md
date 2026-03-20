@@ -284,9 +284,13 @@ Possíveis problemas:
 
 O Chromium com **URLs de `config/autostart.conf`** é aberto **uma vez** pelo serviço `raspberry-pi-manager` (thread em `startup_tasks` → `open_browser_with_urls`). Não use um segundo `.desktop` em `~/.config/autostart/` para o mesmo perfil (`chromium-profile`), senão há risco de SingletonLock / duas aberturas.
 
+- **Comentários em `autostart.conf`:** só linhas que começam por `#` são ignoradas. Texto de comentário sem `#` no início pode ser tratado como URL inválida ou virar `http://...` estranho.
+- **Singleton / “outro computador”:** o instalador cria `/usr/local/bin/pi-manager-chromium-clean-locks` (no sudoers) para matar o Chromium como root e apagar `Singleton*` mesmo que tenham sido criados por outro UID. Após atualizar o projeto, volte a correr o `install.sh` (ou adicione o wrapper e a linha no `sudoers` manualmente) para não ficar só com `sudo find` genérico (que pode não estar permitido).
+- **Perfil novo:** defina `PI_MANAGER_CHROMIUM_USER_DATA_DIR` se mudou hostname ou clonou imagem (ver secção de variáveis de ambiente).
+
 - Aguarde ~15–20 s após o boot (atraso interno para X11 e display `:0`).
 - Verifique o serviço: `sudo systemctl status raspberry-pi-manager`
-- Log de lançamento: `tail -f /home/administrador/pi-manager/logs/browser-launch.log`
+- Log de lançamento: `tail -f <pasta-da-app>/logs/browser-launch.log` (ou o caminho em `PI_MANAGER_LOG_DIR`)
 - Display: `sudo -u administrador env DISPLAY=:0 xdpyinfo`
 - Reinício gráfico se necessário: `sudo systemctl restart lightdm`
 

@@ -396,10 +396,44 @@ ENSUREOF
 chmod 750 /usr/local/bin/pi-manager-ensure-deps
 chown root:root /usr/local/bin/pi-manager-ensure-deps
 
+# Wrapper: remove locks Singleton do Chromium como root (ficheiros criados por sudo / outro UID)
+cat > /usr/local/bin/pi-manager-chromium-clean-locks << 'LOCKCLEANEOF'
+#!/bin/bash
+# Corre como root (sudoers): encerra Chromium e apaga Singleton* (incl. ficheiros de outro UID).
+pkill -9 -f chromium 2>/dev/null || true
+pkill -9 -f chromium-browser 2>/dev/null || true
+sleep 1
+ENV_FILE="/etc/default/raspberry-pi-manager"
+profile="/home/administrador/chromium-profile"
+if [ -f "$ENV_FILE" ]; then
+  line="$(grep -E '^[[:space:]]*PI_MANAGER_CHROMIUM_USER_DATA_DIR=' "$ENV_FILE" 2>/dev/null | tail -n1 || true)"
+  if [ -n "$line" ]; then
+    val="${line#*=}"
+    val="${val%\"}"
+    val="${val#\"}"
+    val="${val%\'}"
+    val="${val#\'}"
+    [ -n "$val" ] && profile="$val"
+  fi
+fi
+clean_dir() {
+  local d="$1"
+  local depth="${2:-4}"
+  [ -d "$d" ] || return 0
+  find "$d" -maxdepth "$depth" \( -name 'Singleton*' -o -name '.com.google.Chrome*' \) -exec rm -f {} \; 2>/dev/null || true
+}
+clean_dir "$profile" 4
+clean_dir "/home/administrador/.config/chromium" 3
+clean_dir "/home/administrador/.cache/chromium" 3
+exit 0
+LOCKCLEANEOF
+chmod 750 /usr/local/bin/pi-manager-chromium-clean-locks
+chown root:root /usr/local/bin/pi-manager-chromium-clean-locks
+
 # Escreve sudoers restrito apontando apenas para os wrappers (valide com visudo)
 
 cat > /etc/sudoers.d/pi-manager << EOF
-administrador ALL=(root) NOPASSWD: /usr/local/bin/pi-manager-nmcli, /usr/local/bin/pi-manager-chpasswd, /usr/local/bin/pi-manager-hostname, /usr/local/bin/pi-manager-ensure-deps, /usr/bin/systemctl restart ${SERVICE_NAME}
+administrador ALL=(root) NOPASSWD: /usr/local/bin/pi-manager-nmcli, /usr/local/bin/pi-manager-chpasswd, /usr/local/bin/pi-manager-hostname, /usr/local/bin/pi-manager-ensure-deps, /usr/local/bin/pi-manager-chromium-clean-locks, /usr/bin/systemctl restart ${SERVICE_NAME}
 EOF
 chown root:root /etc/sudoers.d/pi-manager
 chmod 440 /etc/sudoers.d/pi-manager
@@ -414,7 +448,7 @@ fi
 # Testar se as permissões funcionam (apenas se o usuário existe)
 if id "administrador" &>/dev/null 2>&1; then
     echo -e "${BLUE}🔒 Testando permissões sudo para o usuário administrador...${NC}"
-    if sudo -u administrador -n /usr/local/bin/pi-manager-nmcli help >/dev/null 2>&1; then
+    if sudo -u administrador -n /usr/local/bin/pi-manager-nmcli --version >/dev/null 2>&1; then
         echo -e "${GREEN}✅ Permissões sudo verificadas${NC}"
     else
         echo -e "${YELLOW}⚠️  Sudoers configurado mas permissões podem não estar funcionando.${NC}"
