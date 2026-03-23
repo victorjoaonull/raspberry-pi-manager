@@ -1,20 +1,18 @@
 #!/usr/bin/env bash
 # Corrige login "PAM nao disponivel" no Raspberry Pi Manager.
 #
-# Contexto (APT vs pip vs venv):
-# - python3-pam (apt) instala o modulo (muitas vezes extensao C) por VERSAO de Python.
-#   Se o venv usa Python 3.13 mas o apt so tem pam para 3.11/3.12, "import pam" falha
-#   mesmo com include-system-site-packages=true.
-# - Este script escolhe um binario do sistema em que "import pam" funciona e RECRIA o venv.
-# - python-pam (PyPI) e outro pacote; removemos do venv para nao sombreiar o apt.
+# Ordem de preferencia:
+# 1) python3-pam (apt) visivel no venv (system-site-packages + mesmo Python que tem o .so)
+# 2) Se nenhum python3.X do sistema importa pam (ex.: Debian Trixie + 3.13): python-pam (PyPI) no venv
 #
-# Uso no Raspberry (SSH): sudo bash scripts/fix-pam-on-pi.sh
-#    ou: sudo INSTALL_DIR=/caminho/da/app bash scripts/fix-pam-on-pi.sh
+# Uso: sudo bash scripts/fix-pam-on-pi.sh
+#      sudo INSTALL_DIR=/caminho/da/app bash scripts/fix-pam-on-pi.sh
 
 set -euo pipefail
 
 INSTALL_DIR="${INSTALL_DIR:-/home/administrador/raspberry-pi-manager}"
 VENV_DIR="${INSTALL_DIR}/venv"
+VENV_PY="${VENV_DIR}/bin/python"
 VENV_PIP="${VENV_DIR}/bin/pip"
 PYVENV_CFG="${VENV_DIR}/pyvenv.cfg"
 
@@ -29,59 +27,71 @@ pick_python_with_pam() {
   return 1
 }
 
-echo "==> Instalando python3-pam (apt)..."
+ensure_pam_in_venv() {
+  if sudo -u administrador "$VENV_PY" -c "import pam; assert callable(getattr(pam,'authenticate',None))" 2>/dev/null; then
+    echo "==> PAM OK no venv (sistema/apt)."
+    sudo -u administrador "$VENV_PIP" uninstall -y python-pam 2>/dev/null || true
+    if sudo -u administrador "$VENV_PY" -c "import pam" 2>/dev/null; then
+      return 0
+    fi
+    echo "==> pam sumiu apos pip uninstall — a instalar python-pam (PyPI)."
+  else
+    echo "==> pam nao importa no venv via apt."
+  fi
+  sudo -u administrador "$VENV_PIP" install --no-cache-dir 'python-pam>=2.0.2'
+  sudo -u administrador "$VENV_PY" -c "import pam; assert callable(getattr(pam,'authenticate',None))"
+  echo "==> PAM OK via pip (python-pam)."
+}
+
+echo "==> apt: python3-pam..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq python3-pam
 
-if ! pick_python_with_pam; then
-  echo "==> Nenhum Python importou pam; a tentar python3.11 + venv (comum quando python3 aponta para 3.13)..."
-  apt-get install -y -qq python3.11 python3.11-venv 2>/dev/null || true
+if pick_python_with_pam; then
+  VPY="$PICK_PAM_PY"
+  echo "==> Sistema com import pam em: $VPY"
+else
+  VPY="$(command -v python3)"
+  echo "==> Nenhum python3.X importa pam pelo apt; venv com $VPY + pip python-pam se preciso."
 fi
-if ! pick_python_with_pam; then
-  echo "ERRO: Apos apt install python3-pam, nenhum python3.X conseguiu 'import pam'."
-  echo "      Ex.: sudo apt install python3.11 python3.11-venv && sudo bash $0"
-  exit 1
-fi
-echo "==> Python do sistema com PAM OK: $PICK_PAM_PY"
 
 needs_rebuild=false
-if [ ! -x "${VENV_DIR}/bin/python" ]; then
+if [ ! -x "$VENV_PY" ]; then
   needs_rebuild=true
-elif ! sudo -u administrador "${VENV_DIR}/bin/python" -c "import pam" 2>/dev/null; then
-  echo "==> O venv atual NAO importa pam (versao do Python diferente do modulo apt)."
+elif ! sudo -u administrador "$VENV_PY" -c "import pam" 2>/dev/null; then
+  # Sem pam no venv: recriar com o melhor Python disponivel (ou mesmo python3)
   needs_rebuild=true
 fi
 
 if [ "$needs_rebuild" = true ]; then
-  echo "==> Recriando venv com: $PICK_PAM_PY"
+  echo "==> Recriando venv com: $VPY"
   rm -rf "$VENV_DIR"
-  sudo -u administrador "$PICK_PAM_PY" -m venv "$VENV_DIR" --system-site-packages
+  sudo -u administrador "$VPY" -m venv "$VENV_DIR" --system-site-packages
 fi
 
 if [ -f "$PYVENV_CFG" ] && grep -q '^include-system-site-packages = false' "$PYVENV_CFG" 2>/dev/null; then
-  echo "==> Ativando heranca de site-packages do sistema no venv (pyvenv.cfg)..."
   sed -i 's/^include-system-site-packages = false/include-system-site-packages = true/' "$PYVENV_CFG"
+  echo "==> pyvenv.cfg: include-system-site-packages=true"
 fi
 
-if [ -x "$VENV_PIP" ]; then
-  echo "==> pip install -r requirements.txt (se existir)..."
-  sudo -u administrador "$VENV_PIP" install --upgrade pip
-  if [ -f "${INSTALL_DIR}/requirements.txt" ]; then
-    sudo -u administrador "$VENV_PIP" install -r "${INSTALL_DIR}/requirements.txt"
-  fi
-  echo "==> Removendo pacote pip 'python-pam' do venv (se existir; 'Skipping' e normal)..."
-  sudo -u administrador "$VENV_PIP" uninstall -y python-pam 2>/dev/null || true
-  rm -rf "${INSTALL_DIR}/venv/lib"/python3.*/site-packages/pam "${INSTALL_DIR}/venv/lib"/python3.*/site-packages/pam-*.dist-info 2>/dev/null || true
-else
-  echo "ERRO: venv sem pip em $VENV_PIP"
+if [ ! -x "$VENV_PIP" ]; then
+  echo "ERRO: sem pip em $VENV_PIP"
   exit 1
 fi
+
+echo "==> pip install -r requirements.txt (se existir)..."
+sudo -u administrador "$VENV_PIP" install --upgrade pip
+if [ -f "${INSTALL_DIR}/requirements.txt" ]; then
+  sudo -u administrador "$VENV_PIP" install -r "${INSTALL_DIR}/requirements.txt"
+fi
+
+ensure_pam_in_venv
 
 echo "==> Reiniciando servico..."
 systemctl restart raspberry-pi-manager
 
-echo "==> Teste de import (deve imprimir OK):"
-sudo -u administrador "${VENV_DIR}/bin/python" -c "import pam; assert callable(getattr(pam,'authenticate',None)); print('OK')"
+echo "==> Teste final:"
+sudo -u administrador "$VENV_PY" -c "import pam; assert callable(getattr(pam,'authenticate',None)); print('OK')"
 
-echo "Pronto. Acesse de novo a pagina de login."
+echo "Pronto. Teste: curl -s http://127.0.0.1:5000/api/health | python3 -m json.tool"

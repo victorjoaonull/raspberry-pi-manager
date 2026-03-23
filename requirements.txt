@@ -1,3 +1,5 @@
 Flask>=2.3.0
-# PAM: use apenas o pacote do sistema (sudo apt install python3-pam) com venv --system-site-packages.
-# NÃO instale o wheel PyPI "python-pam" no venv: ele sombreia o apt e costuma quebrar o import no Raspberry (Python 3.13).
+# PAM: o install.sh / fix-pam-on-pi.sh preferem python3-pam (apt) no venv com --system-site-packages.
+# Em Debian Trixie + Python 3.13 o apt muitas vezes NÃO expõe o módulo — aí o instalador faz
+#   pip install 'python-pam>=2.0.2'
+# Não adicione python-pam aqui manualmente salvo que saiba o que faz.

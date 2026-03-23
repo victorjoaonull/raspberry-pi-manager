@@ -115,7 +115,7 @@ def _pam_service_names() -> list[str]:
 
 
 # Versão da Aplicação
-APP_VERSION = "2.4.5"
+APP_VERSION = "2.4.6"
 
 app = Flask(__name__)
 # JSON com caracteres Unicode legíveis nos endpoints (Flask 2.2+)
@@ -1241,9 +1241,9 @@ def api_health():
         if venv_sys is True:
             _fix_pam_script = os.path.join(_APP_DIR, "scripts", "fix-pam-on-pi.sh")
             pam_hint = (
-                "O venv usa um Python (ex.: 3.13) sem modulo pam no apt; o python3-pam costuma "
-                "instalar-se para outra versao (ex.: 3.11). Recrie o venv com um interpretador "
-                f"em que 'import pam' funciona. No Pi: sudo bash {_fix_pam_script}"
+                "Sem modulo pam no venv: em Debian Trixie + Python 3.13 o apt pode nao expor pam ao venv. "
+                f"Rode no Pi (reinstala pip python-pam se necessario): sudo bash {_fix_pam_script} "
+                "ou reexecute install.sh atualizado (passo [7] instala python-pam via PyPI)."
             )
 
     admin_user_exists: Optional[bool] = None

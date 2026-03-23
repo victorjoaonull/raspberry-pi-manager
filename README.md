@@ -180,7 +180,7 @@ Reinicie o serviço após alterar: `sudo systemctl restart raspberry-pi-manager`
 
 **Checklist rápido no Pi:** `curl -s http://127.0.0.1:5000/api/health | python3 -m json.tool` — confirme `pam_module_loaded: true`, `venv_include_system_site_packages: true` e `linux_user_exists: true`.
 
-**`pam_module_loaded: false` com `No module named 'pam'` e `venv_include_system_site_packages: true`:** o interpretador do **venv** (ex.: Python **3.13**) não tem o módulo `pam` no apt; o Debian costuma instalar `python3-pam` só para **outra** versão (ex.: **3.11**). O instalador e o `scripts/fix-pam-on-pi.sh` escolhem/recréiam o venv com um `python3.X` em que `python3.X -c "import pam"` funciona. No Pi: `sudo bash ~/raspberry-pi-manager/scripts/fix-pam-on-pi.sh`.
+**`pam_module_loaded: false` com `No module named 'pam'` e `venv_include_system_site_packages: true`:** em **Debian Trixie** (Raspberry Pi OS recente) o pacote `python3-pam` pode estar instalado mas **nenhum** `python3.X -c "import pam"` funciona no sistema (falta de módulo compilado para essa versão/arm64). O **`install.sh`** e o **`scripts/fix-pam-on-pi.sh` atualizados** instalam então **`python-pam` via pip** no venv após o `requirements.txt`. No Pi: `sudo bash ~/raspberry-pi-manager/scripts/fix-pam-on-pi.sh` ou volte a correr o instalador com o repo atualizado.
 
 ---
 

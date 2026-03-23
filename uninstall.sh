@@ -141,6 +141,7 @@ WRAPPERS=(
     /usr/local/bin/pi-manager-chpasswd
     /usr/local/bin/pi-manager-hostname
     /usr/local/bin/pi-manager-ensure-deps
+    /usr/local/bin/pi-manager-chromium-clean-locks
 )
 for f in "${WRAPPERS[@]}"; do
     if [ -f "$f" ]; then

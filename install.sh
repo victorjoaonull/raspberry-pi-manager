@@ -233,18 +233,11 @@ if [ -n "${VENV_PYTHON_CMD:-}" ]; then
     echo -e "${GREEN}✅ Usando VENV_PYTHON_CMD do ambiente: $VPY${NC}"
 elif pick_python_with_pam; then
     VPY="$PICK_PAM_PY"
-    echo -e "${GREEN}✅ Python do venv (import pam OK neste binário): $VPY${NC}"
+    echo -e "${GREEN}✅ Python do venv (import pam OK neste binário do sistema): $VPY${NC}"
 else
-    echo -e "${YELLOW}⚠️  Nenhum python3.X importou 'pam'; a instalar python3.11 + venv (muitos Pis: pam apt só para 3.11/3.12)...${NC}"
-    apt install -y python3.11 python3.11-venv 2>/dev/null || true
-    if pick_python_with_pam; then
-        VPY="$PICK_PAM_PY"
-        echo -e "${GREEN}✅ Python do venv após python3.11: $VPY${NC}"
-    else
-        VPY="$(command -v python3)"
-        echo -e "${YELLOW}⚠️  Ainda sem 'import pam'. Usando ${VPY} — login PAM pode falhar.${NC}"
-        echo -e "${YELLOW}    Depois: sudo bash ${INSTALL_DIR}/scripts/fix-pam-on-pi.sh${NC}"
-    fi
+    VPY="$(command -v python3)"
+    echo -e "${YELLOW}⚠️  Nenhum python3.X do sistema importou 'pam' pelo apt (comum no Debian Trixie + Python 3.13).${NC}"
+    echo -e "${GREEN}    Venv com ${VPY}; no passo [7] será instalado python-pam via pip se necessário.${NC}"
 fi
 sudo -u administrador "$VPY" -m venv "$VENV_DIR" --system-site-packages
 
@@ -263,9 +256,30 @@ if [ -f "$INSTALL_DIR/requirements.txt" ]; then
 else
     echo -e "${YELLOW}⚠️  requirements.txt não encontrado em $INSTALL_DIR; pulando instalação de dependências Python.${NC}"
 fi
-# Wheel PyPI "python-pam" no venv sombreia python3-pam do apt e falha no import em vários Pis (ex. Python 3.13)
-echo -e "${BLUE}Removendo pacote pip python-pam do venv (mantém autenticação via apt python3-pam)...${NC}"
-sudo -u administrador "$VENV_DIR/bin/pip" uninstall -y python-pam 2>/dev/null || true
+
+# PAM: preferir módulo do apt (herdado no venv). Se não importar (Trixie/3.13 sem .so para pam), usar PyPI.
+ensure_pam_in_venv() {
+    if sudo -u administrador "$VENV_DIR/bin/python" -c "import pam; assert callable(getattr(pam,'authenticate',None))" 2>/dev/null; then
+        echo -e "${GREEN}✅ PAM disponível no venv (python3-pam / sistema).${NC}"
+        echo -e "${BLUE}Removendo python-pam do pip (se existir), para não sombrear o apt...${NC}"
+        sudo -u administrador "$VENV_DIR/bin/pip" uninstall -y python-pam 2>/dev/null || true
+        if sudo -u administrador "$VENV_DIR/bin/python" -c "import pam" 2>/dev/null; then
+            return 0
+        fi
+        echo -e "${YELLOW}⚠️  Sem pam após uninstall pip — a instalar python-pam (PyPI).${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Módulo pam não visível no venv via apt (normal em alguns Trixie/arm64).${NC}"
+    fi
+    echo -e "${BLUE}Instalando python-pam via pip (PyPI)...${NC}"
+    sudo -u administrador "$VENV_DIR/bin/pip" install --no-cache-dir 'python-pam>=2.0.2'
+    if ! sudo -u administrador "$VENV_DIR/bin/python" -c "import pam; assert callable(getattr(pam,'authenticate',None))" 2>/dev/null; then
+        echo -e "${RED}❌ PAM continua indisponível. Login web não funcionará até corrigir.${NC}"
+        return 1
+    fi
+    echo -e "${GREEN}✅ PAM OK via pip (python-pam).${NC}"
+    return 0
+}
+ensure_pam_in_venv
 
 # ========== CRIAR SHELL SCRIPT WRAPPER ==========
 echo -e "${BLUE}[8/12]${NC} Criando script wrapper..."
