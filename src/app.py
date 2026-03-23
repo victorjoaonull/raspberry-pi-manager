@@ -115,7 +115,7 @@ def _pam_service_names() -> list[str]:
 
 
 # Versão da Aplicação
-APP_VERSION = "2.4.4"
+APP_VERSION = "2.4.5"
 
 app = Flask(__name__)
 # JSON com caracteres Unicode legíveis nos endpoints (Flask 2.2+)
@@ -1234,6 +1234,17 @@ def api_health():
     pam_loaded = get_pam_module() is not None
     err = _PAM_IMPORT_ERROR
     err_short = (str(err)[:240] + "…") if err and len(str(err)) > 240 else (str(err) if err else None)
+    venv_sys = _pyvenv_includes_system_site_packages()
+
+    pam_hint: Optional[str] = None
+    if not pam_loaded and err_short and "No module named 'pam'" in err_short:
+        if venv_sys is True:
+            _fix_pam_script = os.path.join(_APP_DIR, "scripts", "fix-pam-on-pi.sh")
+            pam_hint = (
+                "O venv usa um Python (ex.: 3.13) sem modulo pam no apt; o python3-pam costuma "
+                "instalar-se para outra versao (ex.: 3.11). Recrie o venv com um interpretador "
+                f"em que 'import pam' funciona. No Pi: sudo bash {_fix_pam_script}"
+            )
 
     admin_user_exists: Optional[bool] = None
     try:
@@ -1259,7 +1270,8 @@ def api_health():
             "pam_import_error": err_short,
             "pam_user": ADMIN_USERNAME,
             "pam_services": _pam_service_names(),
-            "venv_include_system_site_packages": _pyvenv_includes_system_site_packages(),
+            "venv_include_system_site_packages": venv_sys,
+            "pam_hint": pam_hint,
             "linux_user_exists": admin_user_exists,
             "dist_packages_in_path": any(
                 p in sys.path

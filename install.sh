@@ -213,8 +213,40 @@ fi
 chown -R administrador:administrador "$INSTALL_DIR"
 
 # ========== CRIAR AMBIENTE VIRTUAL ==========
+# python3-pam (apt) instala extensão por VERSÃO de Python. Se `python3` for 3.13 mas o
+# pacote só fornecer pam para 3.11/3.12, o venv herdaria site-packages mas import pam falha.
+# Escolhemos o primeiro interpretador do sistema em que "import pam" funciona.
+pick_python_with_pam() {
+    PICK_PAM_PY=""
+    for cand in python3.13 python3.12 python3.11 python3.10 python3.14 python3; do
+        if command -v "$cand" >/dev/null 2>&1 && "$cand" -c "import pam" 2>/dev/null; then
+            PICK_PAM_PY="$(command -v "$cand")"
+            return 0
+        fi
+    done
+    return 1
+}
+
 echo -e "${BLUE}[6/12]${NC} Criando ambiente virtual Python..."
-sudo -u administrador python3 -m venv "$VENV_DIR" --system-site-packages
+if [ -n "${VENV_PYTHON_CMD:-}" ]; then
+    VPY="${VENV_PYTHON_CMD}"
+    echo -e "${GREEN}✅ Usando VENV_PYTHON_CMD do ambiente: $VPY${NC}"
+elif pick_python_with_pam; then
+    VPY="$PICK_PAM_PY"
+    echo -e "${GREEN}✅ Python do venv (import pam OK neste binário): $VPY${NC}"
+else
+    echo -e "${YELLOW}⚠️  Nenhum python3.X importou 'pam'; a instalar python3.11 + venv (muitos Pis: pam apt só para 3.11/3.12)...${NC}"
+    apt install -y python3.11 python3.11-venv 2>/dev/null || true
+    if pick_python_with_pam; then
+        VPY="$PICK_PAM_PY"
+        echo -e "${GREEN}✅ Python do venv após python3.11: $VPY${NC}"
+    else
+        VPY="$(command -v python3)"
+        echo -e "${YELLOW}⚠️  Ainda sem 'import pam'. Usando ${VPY} — login PAM pode falhar.${NC}"
+        echo -e "${YELLOW}    Depois: sudo bash ${INSTALL_DIR}/scripts/fix-pam-on-pi.sh${NC}"
+    fi
+fi
+sudo -u administrador "$VPY" -m venv "$VENV_DIR" --system-site-packages
 
 # Debian: forçar herança de site-packages do sistema (python3-pam no apt)
 PYVENV_CFG="$VENV_DIR/pyvenv.cfg"
