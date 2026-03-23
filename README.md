@@ -260,20 +260,29 @@ Possíveis problemas:
 
 ### Login: "PAM nao disponivel" ou acentos quebrados (MÃ³dulo / usuÃ¡rio)
 
-**PAM**
+**PAM — APT, pip e venv (leia isto se o apt diz que `python3-pam` já está instalado)**
 
-1. No Pi (SSH), rode o script de correção (instalador copia para a pasta da app):
+- **`python3-pam` (apt)** e **`python-pam` (PyPI)** são pacotes **diferentes**. O projeto usa **só o do Debian** (`apt install python3-pam`).
+- O **venv isola** o Python: por defeito **não vê** os módulos do sistema. O `python3-pam` do apt fica em *site-packages* do sistema; o interpretador dentro do venv só o importa se o venv tiver sido criado com **`--system-site-packages`** (ou `pyvenv.cfg` com `include-system-site-packages = true`). É o comportamento documentado dos ambientes virtuais em Python.
+- O `pip uninstall python-pam` no venv só remove o wheel **PyPI** (se existir). A mensagem *Skipping … not installed* é **normal** quando esse pacote nunca foi instalado no venv.
+- O problema típico de “já tenho python3-pam no sistema mas o login falha” é: **venv sem herança de site-packages** ou **wheel PyPI `python-pam` no venv** a sombrear o apt.
+
+**Passos**
+
+1. No Pi (SSH), use o script (instala apt, ajusta `pyvenv.cfg` se estiver `false`, remove `python-pam` do pip, reinicia o serviço):
    ```bash
    sudo bash /home/administrador/raspberry-pi-manager/scripts/fix-pam-on-pi.sh
    ```
-   Ou manualmente:
+   Ou manualmente (equivalente resumido):
    ```bash
    sudo apt install -y python3-pam
+   # Se criou o venv sem --system-site-packages, edite venv/pyvenv.cfg e ponha include-system-site-packages = true
    sudo -u administrador /home/administrador/raspberry-pi-manager/venv/bin/pip uninstall -y python-pam
    sudo systemctl restart raspberry-pi-manager
    ```
 2. Confira o erro real: `journalctl -u raspberry-pi-manager -b -n 40 --no-pager`
-3. O venv deve ter sido criado com `--system-site-packages` (o `install.sh` já faz isso).
+3. O `install.sh` cria o venv com **`--system-site-packages`** e corrige `pyvenv.cfg` se vier `false` (Debian).
+4. A aplicação também tenta acrescentar `dist-packages` do sistema ao `sys.path` como reforço; o caminho suportado continua a ser **venv + apt + sem `python-pam` no pip**.
 
 **Acentos (charset)**
 
@@ -388,18 +397,18 @@ Para modificar o código localmente:
 git clone https://github.com/victorjoaonull/raspberry-pi-manager.git
 cd raspberry-pi-manager
 
-# Crie um venv
-python3 -m venv venv
+# Crie um venv (no Linux/Debian, --system-site-packages permite importar python3-pam do apt)
+python3 -m venv venv --system-site-packages
 source venv/bin/activate
 
-# Instale dependências
+# Instale dependências (não instale o pacote PyPI "python-pam")
 pip install -r requirements.txt
 
 # Rode localmente
 python3 src/app.py
 ```
 
-Acesse `http://localhost:5000` (sem autenticação em modo local).
+Acesse `http://localhost:5000`. Em Windows o login PAM não replica o Pi; em Linux com `python3-pam` (apt) e venv com `--system-site-packages`, o fluxo aproxima-se do Raspberry.
 
 ---
 
