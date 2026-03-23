@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 import subprocess
 import os
 import sys
+import glob
 import json
 import re
 import threading
@@ -46,6 +47,7 @@ def _load_pam_module():
 
         if getattr(m, "authenticate", None) is None:
             raise ImportError("módulo pam sem authenticate")
+        _PAM_IMPORT_ERROR = None
         return m
     except Exception as e:
         _PAM_IMPORT_ERROR = e
@@ -53,11 +55,14 @@ def _load_pam_module():
     try:
         import importlib.util
 
+        # Caminhos dinâmicos (ex.: Python 3.11 no Bookworm, 3.13 no Trixie)
+        fallback_paths = sorted(
+            glob.glob("/usr/lib/python3.*/dist-packages/pam/__init__.py"),
+            reverse=True,
+        )
         for pkg in (
+            *fallback_paths,
             "/usr/lib/python3/dist-packages/pam/__init__.py",
-            "/usr/lib/python3.14/dist-packages/pam/__init__.py",
-            "/usr/lib/python3.13/dist-packages/pam/__init__.py",
-            "/usr/lib/python3.12/dist-packages/pam/__init__.py",
         ):
             if not os.path.isfile(pkg):
                 continue
@@ -67,6 +72,7 @@ def _load_pam_module():
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             if getattr(mod, "authenticate", None) is not None:
+                _PAM_IMPORT_ERROR = None
                 return mod
     except Exception as e2:
         _PAM_IMPORT_ERROR = e2
@@ -96,10 +102,20 @@ def get_pam_module():
     return pam_module
 
 
-ADMIN_USERNAME = 'administrador'
+# Utilizador Linux cuja senha é validada por PAM (pode mudar em instalações não padrão)
+ADMIN_USERNAME = (os.environ.get("PI_MANAGER_PAM_USER") or "administrador").strip() or "administrador"
+
+
+def _pam_service_names() -> list[str]:
+    """Serviços PAM a tentar (ordem). Override: PI_MANAGER_PAM_SERVICES=login,su,sudo"""
+    raw = (os.environ.get("PI_MANAGER_PAM_SERVICES") or "").strip()
+    if raw:
+        return [s.strip() for s in raw.split(",") if s.strip()]
+    return ["login", "sshd", "su", "sudo"]
+
 
 # Versão da Aplicação
-APP_VERSION = "2.4.3"
+APP_VERSION = "2.4.4"
 
 app = Flask(__name__)
 # JSON com caracteres Unicode legíveis nos endpoints (Flask 2.2+)
@@ -744,20 +760,43 @@ def format_url(url):
         return 'http://' + url
     return url
 
+def _pam_call_returns_bool(auth_fn, *args, **kwargs) -> Optional[bool]:
+    """
+    Chama pam.authenticate.
+    True = autenticado, False = falha explícita, None = TypeError (assinatura não suporta estes args).
+    Excepções PAM/outras → False.
+    """
+    try:
+        result = auth_fn(*args, **kwargs)
+    except TypeError:
+        return None
+    except Exception:
+        return False
+    if result is False:
+        return False
+    if result is True:
+        return True
+    # Alguns bindings devolvem None ou outro valor em sucesso sem excepção
+    return True
+
+
 def verify_admin_password(password: str) -> bool:
     """
-    Verifica a senha REAL do usuário `administrador` no Raspberry via PAM.
-    Compatível com python3-pam (Debian) e python-pam (PyPI 2.x).
+    Verifica a senha REAL do utilizador Linux (ADMIN_USERNAME / PI_MANAGER_PAM_USER) via PAM.
+    Compatível com python3-pam (Debian: costuma devolver True/False) e python-pam (PyPI 2.x).
     """
     mod = get_pam_module()
     if mod is None:
         return False
 
-    auth_fn = getattr(mod, 'authenticate', None)
+    auth_fn = getattr(mod, "authenticate", None)
     if not callable(auth_fn):
         return False
 
-    # PyPI python-pam 2.x: authenticate() sem args retorna objeto com .authenticate(...) -> bool
+    user = ADMIN_USERNAME
+    services = _pam_service_names()
+
+    # PyPI python-pam 2.x: authenticate() sem args → objeto com .authenticate(user, pwd, ...)
     ctx = None
     try:
         ctx = auth_fn()
@@ -766,39 +805,28 @@ def verify_admin_password(password: str) -> bool:
     except Exception:
         ctx = None
 
-    if ctx is not None and hasattr(ctx, 'authenticate'):
-        inner = getattr(ctx, 'authenticate', None)
+    if ctx is not None and hasattr(ctx, "authenticate"):
+        inner = getattr(ctx, "authenticate", None)
         if callable(inner):
-            for service in ('login', 'sshd', 'su'):
-                try:
-                    if inner(ADMIN_USERNAME, password, service=service):
-                        return True
-                except TypeError:
-                    try:
-                        return bool(inner(ADMIN_USERNAME, password))
-                    except Exception:
-                        return False
-                except Exception:
-                    continue
-            try:
-                return bool(inner(ADMIN_USERNAME, password))
-            except Exception:
-                return False
+            for service in services:
+                r = _pam_call_returns_bool(inner, user, password, service=service)
+                if r is None:
+                    break
+                if r is True:
+                    return True
+            r2 = _pam_call_returns_bool(inner, user, password)
+            return r2 is True
 
-    # Debian python3-pam / API função: authenticate(user, password, service=...) sem exceção = sucesso
-    for service in ('login', 'sshd', 'su'):
-        try:
-            auth_fn(ADMIN_USERNAME, password, service=service)
-            return True
-        except TypeError:
+    # Debian python3-pam: authenticate(user, password, service=...) → True/False ou só excepções
+    for service in services:
+        r = _pam_call_returns_bool(auth_fn, user, password, service=service)
+        if r is None:
             break
-        except Exception:
-            continue
-    try:
-        auth_fn(ADMIN_USERNAME, password)
-        return True
-    except Exception:
-        return False
+        if r is True:
+            return True
+
+    r = _pam_call_returns_bool(auth_fn, user, password)
+    return r is True
 
 def sync_chromium_favorites():
     """Sincroniza os favoritos do Chromium com as URLs configuradas em TODOS os perfis"""
@@ -1178,6 +1206,71 @@ def open_browser_with_urls():
 def inject_version():
     """Disponibiliza APP_VERSION em todas as templates"""
     return dict(app_version=APP_VERSION)
+
+
+def _pyvenv_includes_system_site_packages() -> Optional[bool]:
+    """Lê pyvenv.cfg ao lado do Python do venv (se aplicável)."""
+    try:
+        venv_dir = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
+        cfg_path = os.path.join(venv_dir, "pyvenv.cfg")
+        if not os.path.isfile(cfg_path):
+            return None
+        with open(cfg_path, "r", encoding="utf-8", errors="replace") as cf:
+            for line in cf:
+                s = line.strip()
+                if s.lower().startswith("include-system-site-packages"):
+                    return "true" in s.lower()
+        return None
+    except Exception:
+        return None
+
+
+@app.route("/api/health")
+def api_health():
+    """
+    Estado mínimo sem autenticação — útil quando o login PAM falha no Raspberry.
+    Não expõe segredos; mensagem de erro de import é truncada.
+    """
+    pam_loaded = get_pam_module() is not None
+    err = _PAM_IMPORT_ERROR
+    err_short = (str(err)[:240] + "…") if err and len(str(err)) > 240 else (str(err) if err else None)
+
+    admin_user_exists: Optional[bool] = None
+    try:
+        import pwd
+
+        pwd.getpwnam(ADMIN_USERNAME)
+        admin_user_exists = True
+    except ImportError:
+        admin_user_exists = None
+    except KeyError:
+        admin_user_exists = False
+    except Exception:
+        admin_user_exists = None
+
+    return jsonify(
+        {
+            "ok": True,
+            "app_version": APP_VERSION,
+            "python_version": sys.version.split()[0],
+            "python_executable": sys.executable,
+            "pam_module_loaded": pam_loaded,
+            "pam_import_error_class": type(err).__name__ if err else None,
+            "pam_import_error": err_short,
+            "pam_user": ADMIN_USERNAME,
+            "pam_services": _pam_service_names(),
+            "venv_include_system_site_packages": _pyvenv_includes_system_site_packages(),
+            "linux_user_exists": admin_user_exists,
+            "dist_packages_in_path": any(
+                p in sys.path
+                for p in (
+                    f"/usr/lib/python{sys.version_info.major}.{sys.version_info.minor}/dist-packages",
+                    "/usr/lib/python3/dist-packages",
+                )
+            ),
+        }
+    )
+
 
 @app.route('/api/system/info')
 def get_system_info():
@@ -2367,6 +2460,7 @@ def login():
         password = request.form.get('password') if request.form else None
         if not password and request.is_json:
             password = (request.get_json() or {}).get('password')
+        password = (password or "").strip()
 
         if not password:
             return render_template('login.html', error='Senha invalida.')

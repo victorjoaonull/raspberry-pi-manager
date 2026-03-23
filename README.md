@@ -166,8 +166,19 @@ O arquivo `.github/workflows/deploy.yml` já está configurado. A cada push para
 | `PI_MANAGER_LOG_DIR` | Onde gravar logs de ficheiro da app (ex.: `browser-launch.log`). Por omissão: `<pasta da app>/logs`. |
 | `SESSION_COOKIE_SECURE` | `true` / `1` / `yes` se a UI for servida só por HTTPS (cookies `Secure`). |
 | `SESSION_COOKIE_SAMESITE` | Valor do SameSite (ex.: `Lax`, `Strict`); por omissão `Lax`. |
+| `PI_MANAGER_PAM_USER` | Utilizador Linux cuja senha é validada no login (por omissão `administrador`). |
+| `PI_MANAGER_PAM_SERVICES` | Lista de serviços PAM a tentar, separados por vírgula (por omissão `login,sshd,su,sudo`). |
 
 Reinicie o serviço após alterar: `sudo systemctl restart raspberry-pi-manager`.
+
+### Fluxo do login (PAM) — resumo
+
+1. O browser envia **POST `/login`** com a senha do utilizador configurado (`PI_MANAGER_PAM_USER`, por defeito `administrador`).
+2. **`get_pam_module()`** carrega o módulo `pam` (preferencialmente **`python3-pam` do apt** dentro do venv com `include-system-site-packages=true`, com reforço de `sys.path` para `dist-packages`).
+3. **`verify_admin_password()`** chama `authenticate(user, password, service=…)` para cada serviço em **`PI_MANAGER_PAM_SERVICES`** e trata **tanto excepções como retorno `False`** (comportamento típico do Debian).
+4. Se o módulo não carregar, a página de login mostra instruções; em qualquer caso pode abrir **`/api/health`** (JSON) para ver: `pam_module_loaded`, `venv_include_system_site_packages`, `linux_user_exists`, `pam_user`, `pam_services`, etc.
+
+**Checklist rápido no Pi:** `curl -s http://127.0.0.1:5000/api/health | python3 -m json.tool` — confirme `pam_module_loaded: true`, `venv_include_system_site_packages: true` e `linux_user_exists: true`.
 
 ---
 

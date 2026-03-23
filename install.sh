@@ -484,6 +484,10 @@ SERVICE_NAME=raspberry-pi-manager
 #SESSION_COOKIE_SECURE=true
 #SESSION_COOKIE_SAMESITE=Lax
 
+# Login PAM: utilizador Linux e serviços (login,sshd,su,sudo)
+#PI_MANAGER_PAM_USER=administrador
+#PI_MANAGER_PAM_SERVICES=login,su,sudo
+
 # Outras variáveis opcionais
 #DEBUG=false
 #FLASK_HOST=0.0.0.0
