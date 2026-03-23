@@ -10,38 +10,15 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib-pam-venv.sh
+source "${SCRIPT_DIR}/lib-pam-venv.sh"
+
 INSTALL_DIR="${INSTALL_DIR:-/home/administrador/raspberry-pi-manager}"
 VENV_DIR="${INSTALL_DIR}/venv"
 VENV_PY="${VENV_DIR}/bin/python"
 VENV_PIP="${VENV_DIR}/bin/pip"
 PYVENV_CFG="${VENV_DIR}/pyvenv.cfg"
-
-pick_python_with_pam() {
-  PICK_PAM_PY=""
-  for cand in python3.13 python3.12 python3.11 python3.10 python3.14 python3; do
-    if command -v "$cand" >/dev/null 2>&1 && "$cand" -c "import pam" 2>/dev/null; then
-      PICK_PAM_PY="$(command -v "$cand")"
-      return 0
-    fi
-  done
-  return 1
-}
-
-ensure_pam_in_venv() {
-  if sudo -u administrador "$VENV_PY" -c "import pam; assert callable(getattr(pam,'authenticate',None))" 2>/dev/null; then
-    echo "==> PAM OK no venv (sistema/apt)."
-    sudo -u administrador "$VENV_PIP" uninstall -y python-pam 2>/dev/null || true
-    if sudo -u administrador "$VENV_PY" -c "import pam" 2>/dev/null; then
-      return 0
-    fi
-    echo "==> pam sumiu apos pip uninstall — a instalar python-pam (PyPI)."
-  else
-    echo "==> pam nao importa no venv via apt."
-  fi
-  sudo -u administrador "$VENV_PIP" install --no-cache-dir 'python-pam>=2.0.2'
-  sudo -u administrador "$VENV_PY" -c "import pam; assert callable(getattr(pam,'authenticate',None))"
-  echo "==> PAM OK via pip (python-pam)."
-}
 
 echo "==> apt: python3-pam..."
 export DEBIAN_FRONTEND=noninteractive
@@ -60,7 +37,6 @@ needs_rebuild=false
 if [ ! -x "$VENV_PY" ]; then
   needs_rebuild=true
 elif ! sudo -u administrador "$VENV_PY" -c "import pam" 2>/dev/null; then
-  # Sem pam no venv: recriar com o melhor Python disponivel (ou mesmo python3)
   needs_rebuild=true
 fi
 
@@ -86,7 +62,7 @@ if [ -f "${INSTALL_DIR}/requirements.txt" ]; then
   sudo -u administrador "$VENV_PIP" install -r "${INSTALL_DIR}/requirements.txt"
 fi
 
-ensure_pam_in_venv
+ensure_pam_in_venv_for_path "$VENV_DIR" administrador
 
 echo "==> Reiniciando servico..."
 systemctl restart raspberry-pi-manager

@@ -4,8 +4,10 @@
     <meta charset="UTF-8">
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token or '' }}">
     <title>Gerenciador Raspberry PI</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="{{ url_for('static', filename='csrf-helper.js') }}"></script>
     <style>
         /* Simplified dashboard layout: left = info, right = actions */
         .dashboard-layout {
@@ -274,9 +276,9 @@
             if (confirm('Reiniciar o browser com as URLs configuradas?')) {
                 fetch('/api/system/restart-browser', {
                     method: 'POST',
-                    headers: {
+                    headers: piManagerCsrfHeaders({
                         'Content-Type': 'application/json',
-                    }
+                    })
                 })
                 .then(response => response.json())
                 .then(data => {
@@ -294,7 +296,7 @@
         // Reiniciar sistema
         function rebootSystem() {
             if (confirm('Tem certeza que deseja reiniciar o sistema?')) {
-                fetch('/api/system/reboot', {method: 'POST'})
+                fetch('/api/system/reboot', {method: 'POST', headers: piManagerCsrfHeaders({})})
                     .then(response => response.json())
                     .then(data => {
                         if (data.success) {
@@ -311,7 +313,7 @@
         // Desligar sistema
         function shutdownSystem() {
             if (confirm('Tem certeza que deseja desligar o sistema?')) {
-                fetch('/api/system/shutdown', {method: 'POST'})
+                fetch('/api/system/shutdown', {method: 'POST', headers: piManagerCsrfHeaders({})})
                     .then(response => response.json())
                     .then(data => {
                         if (data.success) {

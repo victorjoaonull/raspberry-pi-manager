@@ -49,42 +49,71 @@ fi
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ========== LIMPAR INSTALAÇÕES ANTIGAS ==========
-echo -e "${BLUE}[--]${NC} Removendo possíveis instalações antigas que contenham 'pi-manager' no nome..."
-SEARCH_PATHS=("/home" "/opt" "/usr/local" "/srv" "/var/www" "/root" "/tmp")
+# Por omissão só remove pastas com nomes EXATOS raspberry-pi-manager / raspberry_pi_manager
+# (evita apagar diretórios tipo "meu-pi-manager-backup"). Para o comportamento antigo
+# (find *pi-manager*), defina: PI_MANAGER_LEGACY_WIDE_CLEANUP=1
+echo -e "${BLUE}[--]${NC} Removendo instalações antigas conhecidas (modo seguro)..."
+REPO_DIR_REAL="$(realpath "$REPO_DIR" 2>/dev/null || echo "$REPO_DIR")"
+DIRS_TO_REMOVE=()
 FOUND=()
-for p in "${SEARCH_PATHS[@]}"; do
-    if [ -d "$p" ]; then
-        while IFS= read -r -d $'\0' d; do
-            FOUND+=("$d")
-        done < <(find "$p" -maxdepth 3 -type d -iname "*pi-manager*" -print0 2>/dev/null || true)
+
+_add_if_legacy_dir() {
+    local d="$1"
+    [ -d "$d" ] || return
+    local D_REAL
+    D_REAL="$(realpath "$d" 2>/dev/null || echo "$d")"
+    if [ "$D_REAL" = "$REPO_DIR_REAL" ]; then
+        echo "  ⊘ $d (pulado - é origem do installer)"
+        return
     fi
-done
-if [ ${#FOUND[@]} -gt 0 ]; then
-    # Resolver o caminho real do REPO_DIR para comparação segura
-    REPO_DIR_REAL="$(realpath "$REPO_DIR" 2>/dev/null || echo "$REPO_DIR")"
-    
-    echo "Encontrado diretórios para remoção:" 
-    DIRS_TO_REMOVE=()
-    for d in "${FOUND[@]}"; do
-        D_REAL="$(realpath "$d" 2>/dev/null || echo "$d")"
-        if [ "$D_REAL" = "$REPO_DIR_REAL" ]; then
-            echo "  ⊘ $d (pulado - é origem do installer)"
-        else
-            echo "  - $d (será removido)"
-            DIRS_TO_REMOVE+=("$d")
+    FOUND+=("$D_REAL")
+}
+
+if [ "${PI_MANAGER_LEGACY_WIDE_CLEANUP:-0}" = "1" ]; then
+    echo -e "${YELLOW}⚠️  PI_MANAGER_LEGACY_WIDE_CLEANUP=1: varredura larga *pi-manager* (arriscado).${NC}"
+    SEARCH_PATHS=("/home" "/opt" "/usr/local" "/srv" "/var/www" "/root" "/tmp")
+    for p in "${SEARCH_PATHS[@]}"; do
+        if [ -d "$p" ]; then
+            while IFS= read -r -d $'\0' d; do
+                [ -n "$d" ] || continue
+                _add_if_legacy_dir "$d"
+            done < <(find "$p" -maxdepth 3 -type d -iname "*pi-manager*" -print0 2>/dev/null || true)
         fi
     done
-    
-    if [ ${#DIRS_TO_REMOVE[@]} -gt 0 ]; then
-        echo "Removendo diretórios antigos..."
-        # Mudar para um diretório seguro antes de remover possíveis diretórios
-        cd /tmp || cd / || true
-        
-        for d in "${DIRS_TO_REMOVE[@]}"; do
-            echo "  Removendo: $d"
-            rm -rf "$d" || echo -e "${YELLOW}⚠️  Aviso: não foi possível remover $d${NC}"
+else
+    STRICT_NAMES=( "raspberry-pi-manager" "raspberry_pi_manager" )
+    for name in "${STRICT_NAMES[@]}"; do
+        for base in /opt /srv /var/www /usr/local /root /tmp; do
+            _add_if_legacy_dir "$base/$name"
+        done
+    done
+    if [ -d /home ]; then
+        for udir in /home/*; do
+            [ -d "$udir" ] || continue
+            for name in "${STRICT_NAMES[@]}"; do
+                _add_if_legacy_dir "$udir/$name"
+            done
         done
     fi
+fi
+
+# Deduplicar (bash 4+)
+if [ ${#FOUND[@]} -gt 0 ]; then
+    readarray -t FOUND < <(printf '%s\n' "${FOUND[@]}" | sort -u)
+fi
+
+if [ ${#FOUND[@]} -gt 0 ]; then
+    echo "Encontrado diretórios para remoção:"
+    for d in "${FOUND[@]}"; do
+        echo "  - $d (será removido)"
+        DIRS_TO_REMOVE+=("$d")
+    done
+    echo "Removendo diretórios antigos..."
+    cd /tmp || cd / || true
+    for d in "${DIRS_TO_REMOVE[@]}"; do
+        echo "  Removendo: $d"
+        rm -rf "$d" || echo -e "${YELLOW}⚠️  Aviso: não foi possível remover $d${NC}"
+    done
 else
     echo "Nenhuma instalação antiga encontrada."
 fi
@@ -209,6 +238,11 @@ else
         cp "$REPO_DIR/scripts/fix-pam-on-pi.sh" "$INSTALL_DIR/scripts/"
         chmod +x "$INSTALL_DIR/scripts/fix-pam-on-pi.sh"
     fi
+    if [ -f "$REPO_DIR/scripts/lib-pam-venv.sh" ] && [ "$(realpath "$REPO_DIR")" != "$(realpath "$INSTALL_DIR")" ]; then
+        mkdir -p "$INSTALL_DIR/scripts"
+        cp "$REPO_DIR/scripts/lib-pam-venv.sh" "$INSTALL_DIR/scripts/"
+        chmod +x "$INSTALL_DIR/scripts/lib-pam-venv.sh"
+    fi
 fi
 chown -R administrador:administrador "$INSTALL_DIR"
 
@@ -216,16 +250,13 @@ chown -R administrador:administrador "$INSTALL_DIR"
 # python3-pam (apt) instala extensão por VERSÃO de Python. Se `python3` for 3.13 mas o
 # pacote só fornecer pam para 3.11/3.12, o venv herdaria site-packages mas import pam falha.
 # Escolhemos o primeiro interpretador do sistema em que "import pam" funciona.
-pick_python_with_pam() {
-    PICK_PAM_PY=""
-    for cand in python3.13 python3.12 python3.11 python3.10 python3.14 python3; do
-        if command -v "$cand" >/dev/null 2>&1 && "$cand" -c "import pam" 2>/dev/null; then
-            PICK_PAM_PY="$(command -v "$cand")"
-            return 0
-        fi
-    done
-    return 1
-}
+INSTALLER_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ ! -f "${INSTALLER_ROOT}/scripts/lib-pam-venv.sh" ]; then
+    echo -e "${RED}❌ Falta ${INSTALLER_ROOT}/scripts/lib-pam-venv.sh (mantenha o repositório completo).${NC}"
+    exit 1
+fi
+# shellcheck source=scripts/lib-pam-venv.sh
+source "${INSTALLER_ROOT}/scripts/lib-pam-venv.sh"
 
 echo -e "${BLUE}[6/12]${NC} Criando ambiente virtual Python..."
 if [ -n "${VENV_PYTHON_CMD:-}" ]; then
@@ -258,28 +289,9 @@ else
 fi
 
 # PAM: preferir módulo do apt (herdado no venv). Se não importar (Trixie/3.13 sem .so para pam), usar PyPI.
-ensure_pam_in_venv() {
-    if sudo -u administrador "$VENV_DIR/bin/python" -c "import pam; assert callable(getattr(pam,'authenticate',None))" 2>/dev/null; then
-        echo -e "${GREEN}✅ PAM disponível no venv (python3-pam / sistema).${NC}"
-        echo -e "${BLUE}Removendo python-pam do pip (se existir), para não sombrear o apt...${NC}"
-        sudo -u administrador "$VENV_DIR/bin/pip" uninstall -y python-pam 2>/dev/null || true
-        if sudo -u administrador "$VENV_DIR/bin/python" -c "import pam" 2>/dev/null; then
-            return 0
-        fi
-        echo -e "${YELLOW}⚠️  Sem pam após uninstall pip — a instalar python-pam (PyPI).${NC}"
-    else
-        echo -e "${YELLOW}⚠️  Módulo pam não visível no venv via apt (normal em alguns Trixie/arm64).${NC}"
-    fi
-    echo -e "${BLUE}Instalando python-pam via pip (PyPI)...${NC}"
-    sudo -u administrador "$VENV_DIR/bin/pip" install --no-cache-dir 'python-pam>=2.0.2'
-    if ! sudo -u administrador "$VENV_DIR/bin/python" -c "import pam; assert callable(getattr(pam,'authenticate',None))" 2>/dev/null; then
-        echo -e "${RED}❌ PAM continua indisponível. Login web não funcionará até corrigir.${NC}"
-        return 1
-    fi
-    echo -e "${GREEN}✅ PAM OK via pip (python-pam).${NC}"
-    return 0
-}
-ensure_pam_in_venv
+if ! ensure_pam_in_venv_for_path "$VENV_DIR" administrador; then
+    echo -e "${RED}❌ PAM continua indisponível. Login web não funcionará até corrigir.${NC}"
+fi
 
 # ========== CRIAR SHELL SCRIPT WRAPPER ==========
 echo -e "${BLUE}[8/12]${NC} Criando script wrapper..."
@@ -445,10 +457,17 @@ chown root:root /usr/local/bin/pi-manager-ensure-deps
 # Wrapper: remove locks Singleton do Chromium como root (ficheiros criados por sudo / outro UID)
 cat > /usr/local/bin/pi-manager-chromium-clean-locks << 'LOCKCLEANEOF'
 #!/bin/bash
-# Corre como root (sudoers): encerra Chromium e apaga Singleton* (incl. ficheiros de outro UID).
-pkill -9 -f chromium 2>/dev/null || true
-pkill -9 -f chromium-browser 2>/dev/null || true
-sleep 1
+# Corre como root (sudoers): encerra Chromium do perfil gerido e apaga Singleton* (incl. ficheiros de outro UID).
+kill_chromium_for_profile() {
+  local prof="$1"
+  [ -d /proc ] || return 0
+  for d in /proc/[0-9]*; do
+    [ -r "$d/cmdline" ] || continue
+    if tr '\0' ' ' < "$d/cmdline" 2>/dev/null | grep -Fq -- "--user-data-dir=$prof"; then
+      kill -9 "${d##*/}" 2>/dev/null || true
+    fi
+  done
+}
 ENV_FILE="/etc/default/raspberry-pi-manager"
 profile="/home/administrador/chromium-profile"
 if [ -f "$ENV_FILE" ]; then
@@ -462,6 +481,8 @@ if [ -f "$ENV_FILE" ]; then
     [ -n "$val" ] && profile="$val"
   fi
 fi
+kill_chromium_for_profile "$profile"
+sleep 1
 clean_dir() {
   local d="$1"
   local depth="${2:-4}"
@@ -476,10 +497,36 @@ LOCKCLEANEOF
 chmod 750 /usr/local/bin/pi-manager-chromium-clean-locks
 chown root:root /usr/local/bin/pi-manager-chromium-clean-locks
 
+# Wrapper: reinício/desligamento só com subcomandos fixos (evita sudo shutdown genérico)
+cat > /usr/local/bin/pi-manager-power << 'POWEREOF'
+#!/bin/bash
+set -e
+LOG=/var/log/pi-manager-power.log
+action="$1"
+case "$action" in
+  reboot-now) /usr/sbin/shutdown -r now ;;
+  halt-now)   /usr/sbin/shutdown -h now ;;
+  reboot-1)   /usr/sbin/shutdown -r +1 ;;
+  halt-1)     /usr/sbin/shutdown -h +1 ;;
+  *)
+    echo "uso: pi-manager-power reboot-now|halt-now|reboot-1|halt-1" >&2
+    echo "$(date -Iseconds) invalid action: $action" >> "$LOG"
+    exit 2
+    ;;
+esac
+echo "$(date -Iseconds) ok $action" >> "$LOG"
+exit 0
+POWEREOF
+chmod 750 /usr/local/bin/pi-manager-power
+chown root:root /usr/local/bin/pi-manager-power
+touch /var/log/pi-manager-power.log || true
+chown root:adm /var/log/pi-manager-power.log || true
+chmod 640 /var/log/pi-manager-power.log || true
+
 # Escreve sudoers restrito apontando apenas para os wrappers (valide com visudo)
 
 cat > /etc/sudoers.d/pi-manager << EOF
-administrador ALL=(root) NOPASSWD: /usr/local/bin/pi-manager-nmcli, /usr/local/bin/pi-manager-chpasswd, /usr/local/bin/pi-manager-hostname, /usr/local/bin/pi-manager-ensure-deps, /usr/local/bin/pi-manager-chromium-clean-locks, /usr/bin/systemctl restart ${SERVICE_NAME}
+administrador ALL=(root) NOPASSWD: /usr/local/bin/pi-manager-nmcli, /usr/local/bin/pi-manager-chpasswd, /usr/local/bin/pi-manager-hostname, /usr/local/bin/pi-manager-ensure-deps, /usr/local/bin/pi-manager-chromium-clean-locks, /usr/local/bin/pi-manager-power, /usr/bin/systemctl restart ${SERVICE_NAME}
 EOF
 chown root:root /etc/sudoers.d/pi-manager
 chmod 440 /etc/sudoers.d/pi-manager
@@ -534,6 +581,12 @@ SERVICE_NAME=raspberry-pi-manager
 #PI_MANAGER_PAM_USER=administrador
 #PI_MANAGER_PAM_SERVICES=login,su,sudo
 
+# Chave de sessão Flask (o instalador gera automaticamente se a linha faltar ou estiver vazia)
+#FLASK_SECRET_KEY=
+
+# Endpoints /api/diagnostic/* e /api/favorites/diagnostic (1/true/yes para ativar)
+#PI_MANAGER_DIAGNOSTICS=false
+
 # Outras variáveis opcionais
 #DEBUG=false
 #FLASK_HOST=0.0.0.0
@@ -554,6 +607,27 @@ fi
 if [ -f "$ENV_FILE" ] && ! grep -q '^PI_MANAGER_CHROMIUM_USER_DATA_DIR=' "$ENV_FILE" 2>/dev/null; then
     echo "PI_MANAGER_CHROMIUM_USER_DATA_DIR=$PI_MANAGER_CHROMIUM_USER_DATA_DIR" >> "$ENV_FILE"
     echo -e "${GREEN}✅ PI_MANAGER_CHROMIUM_USER_DATA_DIR registrado em $ENV_FILE.${NC}"
+fi
+
+# Chave persistente Flask (evita invalidar sessões a cada restart do serviço)
+if [ -f "$ENV_FILE" ]; then
+    if grep -qE '^FLASK_SECRET_KEY=.+' "$ENV_FILE" 2>/dev/null; then
+        echo -e "${GREEN}✅ FLASK_SECRET_KEY já definida em $ENV_FILE${NC}"
+    else
+        sed -i '/^FLASK_SECRET_KEY=$/d' "$ENV_FILE" 2>/dev/null || true
+        if command -v openssl >/dev/null 2>&1; then
+            _FSK="$(openssl rand -hex 32)"
+        else
+            _FSK="$(python3 -c 'import secrets; print(secrets.token_hex(32))' 2>/dev/null || echo "")"
+        fi
+        if [ -n "$_FSK" ]; then
+            echo "FLASK_SECRET_KEY=$_FSK" >> "$ENV_FILE"
+            chmod 600 "$ENV_FILE" 2>/dev/null || true
+            echo -e "${GREEN}✅ FLASK_SECRET_KEY gerada e anexada a $ENV_FILE (reinicie o serviço).${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Não foi possível gerar FLASK_SECRET_KEY automaticamente; defina manualmente.${NC}"
+        fi
+    fi
 fi
 
 # ========== CONFIGURAR SERVIÇO SYSTEMD ==========

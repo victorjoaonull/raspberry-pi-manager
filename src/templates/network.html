@@ -4,8 +4,10 @@
     <meta charset="UTF-8">
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token or '' }}">
     <title>Rede - Gerenciador PI</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="{{ url_for('static', filename='csrf-helper.js') }}"></script>
     <style>
         .connection-card {
             background: #f8f9fa;
@@ -670,7 +672,7 @@
 
                 fetch(endpoint, {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
+                    headers: piManagerCsrfHeaders({'Content-Type': 'application/json'}),
                     body: JSON.stringify(config)
                 })
                 .then(r => r.json())
@@ -722,7 +724,7 @@
 
             fetch('/api/network/configure', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
+                headers: piManagerCsrfHeaders({'Content-Type': 'application/json'}),
                 body: JSON.stringify(config)
             })
             .then(r => r.json())
@@ -749,7 +751,8 @@
             }
 
             fetch(`/api/network/connection/${encodeURIComponent(currentEditingConnection)}`, {
-                method: 'DELETE'
+                method: 'DELETE',
+                headers: piManagerCsrfHeaders({})
             })
             .then(r => r.json())
             .then(data => {
@@ -936,7 +939,7 @@
             
             fetch('/api/network/configure', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
+                headers: piManagerCsrfHeaders({'Content-Type': 'application/json'}),
                 body: JSON.stringify({
                     type: 'toggle',
                     name: connectionName,
@@ -958,7 +961,8 @@
 
         function deleteConnectionDirect(connectionName) {
             fetch(`/api/network/connection/${encodeURIComponent(connectionName)}`, {
-                method: 'DELETE'
+                method: 'DELETE',
+                headers: piManagerCsrfHeaders({})
             })
             .then(r => r.json())
             .then(data => {

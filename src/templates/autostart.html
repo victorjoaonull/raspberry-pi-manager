@@ -4,8 +4,10 @@
     <meta charset="UTF-8">
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token or '' }}">
     <title>Autostart - Gerenciador PI</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="{{ url_for('static', filename='csrf-helper.js') }}"></script>
     <style>
         /* Layout principal - duas colunas */
         .autostart-layout {
@@ -623,7 +625,7 @@
             
             showMessage('⏳ Sincronizando favoritos...', 'info');
             
-            fetch('/api/favorites/sync', { method: 'POST' })
+            fetch('/api/favorites/sync', { method: 'POST', headers: piManagerCsrfHeaders({}) })
                 .then(r => r.json())
                 .then(data => {
                     if (data.success) {
@@ -695,7 +697,7 @@
             
             fetch('/api/autostart/urls', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: piManagerCsrfHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({ urls: urls })
             })
             .then(r => r.json())
@@ -715,7 +717,7 @@
             
             showMessage('⏳ Reiniciando browser...', 'info');
             
-            fetch('/api/system/restart-browser', { method: 'POST' })
+            fetch('/api/system/restart-browser', { method: 'POST', headers: piManagerCsrfHeaders({}) })
                 .then(r => r.json())
                 .then(data => {
                     if (data.success) {

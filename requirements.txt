@@ -1,4 +1,6 @@
 Flask>=2.3.0
+# Necessário para python-pam (PyPI) — o wheel em piwheels por vezes não puxa six automaticamente.
+six>=1.16.0
 # PAM: o install.sh / fix-pam-on-pi.sh preferem python3-pam (apt) no venv com --system-site-packages.
 # Em Debian Trixie + Python 3.13 o apt muitas vezes NÃO expõe o módulo — aí o instalador faz
 #   pip install 'python-pam>=2.0.2'

@@ -4,8 +4,10 @@
     <meta charset="UTF-8">
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token or '' }}">
     <title>Sistema - Gerenciador PI</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="{{ url_for('static', filename='csrf-helper.js') }}"></script>
     <style>
         .system-grid {
             display: grid;
@@ -283,7 +285,7 @@
                 <div class="form-group">
                     <label for="new-password">Nova Senha:</label>
                     <div class="password-container">
-                        <input type="password" id="new-password" placeholder="Mín. 3 caracteres">
+                        <input type="password" id="new-password" placeholder="Mín. 8 caracteres">
                         <button type="button" class="password-toggle" onclick="togglePassword('new-password')">👁️</button>
                     </div>
                 </div>
@@ -440,7 +442,7 @@
     const msg = document.getElementById('system-actions-message');
     showMessage(msg, '⏳ Limpando locks...', 'info');
     
-    fetch('/api/system/cleanup-chromium', { method: 'POST' })
+    fetch('/api/system/cleanup-chromium', { method: 'POST', headers: piManagerCsrfHeaders({}) })
         .then(response => response.json())
         .then(data => {
             if (data.success) {
@@ -498,7 +500,7 @@
             
             fetch('/api/system/hostname', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
+                headers: piManagerCsrfHeaders({'Content-Type': 'application/json'}),
                 body: JSON.stringify({hostname: newHostname})
             })
             .then(response => response.json())
@@ -530,14 +532,14 @@
                 return;
             }
             
-            if (newPassword.length < 3) {
-                showMessage(messageDiv, '❌ Mínimo 3 caracteres', 'error');
+            if (newPassword.length < 8) {
+                showMessage(messageDiv, '❌ Mínimo 8 caracteres', 'error');
                 return;
             }
             
             fetch('/api/system/password', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
+                headers: piManagerCsrfHeaders({'Content-Type': 'application/json'}),
                 body: JSON.stringify({password: newPassword})
             })
             .then(response => response.json())
@@ -557,7 +559,7 @@
         function restartBrowser() {
             if (!confirm('Reiniciar o browser?')) return;
             
-            fetch('/api/system/restart-browser', {method: 'POST'})
+            fetch('/api/system/restart-browser', {method: 'POST', headers: piManagerCsrfHeaders({})})
                 .then(response => response.json())
                 .then(data => {
                     const msg = document.getElementById('system-actions-message');
@@ -577,7 +579,7 @@
 
             fetch('/api/system/restart-service', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' }
+                headers: piManagerCsrfHeaders({ 'Content-Type': 'application/json' })
             })
                 .then(response => response.json())
                 .then(data => {
@@ -600,7 +602,7 @@
             const msg = document.getElementById('system-actions-message');
             showMessage(msg, '⏳ Sincronizando...', 'info');
             
-            fetch('/api/favorites/sync', {method: 'POST'})
+            fetch('/api/favorites/sync', {method: 'POST', headers: piManagerCsrfHeaders({})})
                 .then(response => response.json())
                 .then(data => {
                     showMessage(msg, data.success ? '✅ ' + data.message : '❌ ' + data.error,
@@ -613,7 +615,7 @@
         function rebootSystem() {
             if (!confirm('Reiniciar em 1 minuto?')) return;
             
-            fetch('/api/system/reboot', {method: 'POST'})
+            fetch('/api/system/reboot', {method: 'POST', headers: piManagerCsrfHeaders({})})
                 .then(response => response.json())
                 .then(data => {
                     const msg = document.getElementById('reboot-message');
@@ -626,7 +628,7 @@
         function shutdownSystem() {
             if (!confirm('Desligar em 1 minuto?')) return;
             
-            fetch('/api/system/shutdown', {method: 'POST'})
+            fetch('/api/system/shutdown', {method: 'POST', headers: piManagerCsrfHeaders({})})
                 .then(response => response.json())
                 .then(data => {
                     const msg = document.getElementById('reboot-message');
@@ -639,7 +641,7 @@
         function rebootNow() {
             if (!confirm('🚨 Reiniciar IMEDIATAMENTE?')) return;
             
-            fetch('/api/system/reboot-now', {method: 'POST'})
+            fetch('/api/system/reboot-now', {method: 'POST', headers: piManagerCsrfHeaders({})})
                 .then(response => response.json())
                 .then(data => {
                     const msg = document.getElementById('reboot-message');
@@ -653,7 +655,7 @@
         function shutdownNow() {
             if (!confirm('🚨 Desligar IMEDIATAMENTE?')) return;
             
-            fetch('/api/system/shutdown-now', {method: 'POST'})
+            fetch('/api/system/shutdown-now', {method: 'POST', headers: piManagerCsrfHeaders({})})
                 .then(response => response.json())
                 .then(data => {
                     const msg = document.getElementById('reboot-message');

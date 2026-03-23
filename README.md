@@ -168,17 +168,48 @@ O arquivo `.github/workflows/deploy.yml` já está configurado. A cada push para
 | `SESSION_COOKIE_SAMESITE` | Valor do SameSite (ex.: `Lax`, `Strict`); por omissão `Lax`. |
 | `PI_MANAGER_PAM_USER` | Utilizador Linux cuja senha é validada no login (por omissão `administrador`). |
 | `PI_MANAGER_PAM_SERVICES` | Lista de serviços PAM a tentar, separados por vírgula (por omissão `login,sshd,su,sudo`). |
+| `PI_MANAGER_HEALTH_SECRET` | Opcional. Se definido, **`GET /api/health`** só responde com o JSON completo quando o pedido inclui o cabeçalho **`X-Health-Secret`** com o mesmo valor; caso contrário devolve **`404`** com `{"ok": false}` (menos exposição de diagnóstico na rede). |
+| `PI_MANAGER_DEBUG_TRACEBACK` | Opcional (`true`/`1`/`yes`). Quando ativo, o servidor regista **tracebacks** extra em pontos que antes engoliam erros (ex.: limpeza de locks Chromium, `pgrep`), útil para diagnóstico no `journalctl`. |
+| `FLASK_SECRET_KEY` | **Recomendado em produção.** Chave hexadecimal longa para assinar cookies de sessão. O **`install.sh`** gera e grava em `/etc/default/...` se ainda não existir; sem isto, cada restart do serviço gera chave nova e **desliga todas as sessões**. |
+| `PI_MANAGER_DIAGNOSTICS` | `true`/`1`/`yes` ativa **`/api/diagnostic/*`** e **`/api/favorites/diagnostic`**. Por omissão **desligado** (resposta `404` mínima), exceto se a app correr em **debug**. |
+| `PI_MANAGER_LOGIN_RATE_LIMIT` | `0`/`false` desliga o limite de tentativas de login; por omissão **ativo**. |
+| `PI_MANAGER_LOGIN_MAX_FAILS` | Número máximo de falhas de palavra-passe na janela (por omissão **8**). `≤ 0` desliga o limite. |
+| `PI_MANAGER_LOGIN_WINDOW_SEC` | Janela em segundos para contar falhas (por omissão **900** = 15 min). |
+| `PI_MANAGER_LOGIN_LOCKOUT_SEC` | Duração do bloqueio após exceder o máximo (por omissão **600** = 10 min). |
+| `PI_MANAGER_TRUST_PROXY` | `true` se estiver atrás de um **proxy de confiança**; o limite de login usa o primeiro IP de **`X-Forwarded-For`**. **Não ative** sem proxy controlado (risco de spoofing). |
+| `PI_MANAGER_ASCII_LOGS` | `true`/`1`/`yes`: substitui **emoji** comuns nos logs do painel (`add_event`) e em algumas mensagens de consola por etiquetas **`[OK]`**, **`[WARN]`**, etc. (útil em `journalctl` / terminais sem Unicode). |
+| `SKIP_STARTUP_TASKS` | Reservado para **testes** (`1`/`true`): não executa `startup_tasks()` na importação do `app.py` (evita sleeps e threads). **Não use em produção**. |
 
 Reinicie o serviço após alterar: `sudo systemctl restart raspberry-pi-manager`.
 
+### Manutenção (Etapa 2 — auditoria)
+
+- **`src/lib/chromium_favorites.py`**: lógica de favoritos fora do `app.py`.
+- **`scripts/lib-pam-venv.sh`**: funções partilhadas de PAM no venv; usadas por **`install.sh`**, **`scripts/fix-pam-on-pi.sh`** e **`update_app.sh`** (com fallback se o ficheiro ainda não existir numa instalação antiga).
+- **Chromium**: `pgrep` / `pkill` / wrapper **`pi-manager-chromium-clean-locks`** passam a alvo só processos com **`--user-data-dir=`** igual ao perfil gerido (variável de ambiente / predefinição), para não encerrar outras instâncias do Chromium no mesmo sistema.
+
+### Robustez (Etapa 3 — auditoria)
+
+- **`FLASK_SECRET_KEY`**: gerada pelo **`install.sh`** quando em falta; sessões estáveis entre restarts.
+- **Login**: limite de tentativas por IP (falhas de palavra-passe + tentativas vazias), com bloqueio temporário; sem biblioteca extra.
+- **Diagnóstico**: rotas **`/api/diagnostic/*`** e **`/api/favorites/diagnostic`** só com **`PI_MANAGER_DIAGNOSTICS=true`** (ou modo debug).
+- **`update_app.sh`**: verificação final **`import pam`** registada em `update_app.log`; opcional **`UPDATE_APP_STRICT_PAM=1`** para **`exit 1`** se PAM falhar (útil em CI ou webhook com monitorização).
+
+### Qualidade / DX (Etapa 4 — auditoria)
+
+- **Logs ASCII**: variável **`PI_MANAGER_ASCII_LOGS`** para `journalctl` sem emoji.
+- **`install.sh`**: limpeza de pastas antigas só com nomes **`raspberry-pi-manager`** / **`raspberry_pi_manager`** em caminhos previsíveis (`/home/*`, `/opt`, …). A varredura larga `*pi-manager*` fica atrás de **`PI_MANAGER_LEGACY_WIDE_CLEANUP=1`** (comportamento antigo, mais arriscado).
+- **Testes**: `pip install -r requirements-dev.txt` e `pytest` na raiz do repositório (`tests/`).
+- **Tipos**: `mypy.ini` cobre `src/lib/*.py` (módulos extraídos); correr `mypy` após instalar `requirements-dev.txt`.
+
 ### Fluxo do login (PAM) — resumo
 
-1. O browser envia **POST `/login`** com a senha do utilizador configurado (`PI_MANAGER_PAM_USER`, por defeito `administrador`).
+1. O browser envia **POST `/login`** com a senha do utilizador configurado (`PI_MANAGER_PAM_USER`, por defeito `administrador`), um **token CSRF** (campo oculto + sessão) e está sujeito a **limite de tentativas** por IP (ver variáveis `PI_MANAGER_LOGIN_*` acima).
 2. **`get_pam_module()`** carrega o módulo `pam` (preferencialmente **`python3-pam` do apt** dentro do venv com `include-system-site-packages=true`, com reforço de `sys.path` para `dist-packages`).
 3. **`verify_admin_password()`** chama `authenticate(user, password, service=…)` para cada serviço em **`PI_MANAGER_PAM_SERVICES`** e trata **tanto excepções como retorno `False`** (comportamento típico do Debian).
 4. Se o módulo não carregar, a página de login mostra instruções; em qualquer caso pode abrir **`/api/health`** (JSON) para ver: `pam_module_loaded`, `venv_include_system_site_packages`, `linux_user_exists`, `pam_user`, `pam_services`, etc.
 
-**Checklist rápido no Pi:** `curl -s http://127.0.0.1:5000/api/health | python3 -m json.tool` — confirme `pam_module_loaded: true`, `venv_include_system_site_packages: true` e `linux_user_exists: true`.
+**Checklist rápido no Pi:** sem `PI_MANAGER_HEALTH_SECRET`: `curl -s http://127.0.0.1:5000/api/health | python3 -m json.tool` — confirme `pam_module_loaded: true`, `venv_include_system_site_packages: true` e `linux_user_exists: true`. Com segredo definido: `curl -s -H "X-Health-Secret: SEU_SEGREDO" http://127.0.0.1:5000/api/health | python3 -m json.tool`.
 
 **`pam_module_loaded: false` com `No module named 'pam'` e `venv_include_system_site_packages: true`:** em **Debian Trixie** (Raspberry Pi OS recente) o pacote `python3-pam` pode estar instalado mas **nenhum** `python3.X -c "import pam"` funciona no sistema (falta de módulo compilado para essa versão/arm64). O **`install.sh`** e o **`scripts/fix-pam-on-pi.sh` atualizados** instalam então **`python-pam` via pip** no venv após o `requirements.txt`. No Pi: `sudo bash ~/raspberry-pi-manager/scripts/fix-pam-on-pi.sh` ou volte a correr o instalador com o repo atualizado.
 

@@ -17,6 +17,12 @@ from datetime import datetime
 from collections import deque
 from typing import Optional
 import hmac
+import secrets
+import traceback
+
+from lib.log_format import format_log_line
+from lib.update_allowlist import is_allowed_update_script as _is_allowed_update_script_lib
+from lib.url_utils import format_url, is_valid_url_or_ip
 
 # Autenticação via PAM (senha real do Linux do usuário `administrador`).
 # Preferir SEMPRE o pacote Debian python3-pam (venv com --system-site-packages).
@@ -115,7 +121,7 @@ def _pam_service_names() -> list[str]:
 
 
 # Versão da Aplicação
-APP_VERSION = "2.4.6"
+APP_VERSION = "2.5.3"
 
 app = Flask(__name__)
 # JSON com caracteres Unicode legíveis nos endpoints (Flask 2.2+)
@@ -128,12 +134,15 @@ if os.environ.get("SESSION_COOKIE_SECURE", "").lower() in ("1", "true", "yes"):
     app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = os.environ.get("SESSION_COOKIE_SAMESITE", "Lax")
-# Secret para sessões. Preferir variável de ambiente para evitar "hardcode".
-# Se não estiver definida, usa uma chave temporária (sessões expiram após reinício).
-app.secret_key = os.environ.get('FLASK_SECRET_KEY')
+# Secret para sessões: definir FLASK_SECRET_KEY em /etc/default/... (install.sh gera se faltar).
+# Sem chave persistente, sessões invalidam a cada restart do processo.
+app.secret_key = os.environ.get("FLASK_SECRET_KEY")
 if not app.secret_key:
     app.secret_key = os.urandom(32)
-    print("⚠️ FLASK_SECRET_KEY não definida; usando chave temporária (sessões expiram após reinício).")
+    print(
+        "⚠️ FLASK_SECRET_KEY não definida; usando chave temporária (sessões expiram após reinício). "
+        "Defina FLASK_SECRET_KEY no EnvironmentFile do systemd (ex.: install.sh ou /etc/default/raspberry-pi-manager)."
+    )
 
 if pam_module is None:
     print(
@@ -162,7 +171,7 @@ EVENT_LOG = deque(maxlen=200)
 
 def add_event(msg):
     ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    entry = f"[{ts}] {msg}"
+    entry = f"[{ts}] {format_log_line(msg)}"
     try:
         EVENT_LOG.appendleft(entry)
     except Exception:
@@ -174,6 +183,9 @@ NMCLI_WRAPPER = '/usr/local/bin/pi-manager-nmcli'
 CHPASS_WRAPPER = '/usr/local/bin/pi-manager-chpasswd'
 HOSTNAME_WRAPPER = '/usr/local/bin/pi-manager-hostname'
 CHROMIUM_LOCKS_WRAPPER = '/usr/local/bin/pi-manager-chromium-clean-locks'
+POWER_WRAPPER = '/usr/local/bin/pi-manager-power'
+# Política mínima de senha (UI e API alinhadas)
+MIN_PASSWORD_LENGTH = 8
 
 def run_nmcli(args, capture_output=True, text=True, timeout=None):
     """Executa nmcli via wrapper seguro, com fallback para nmcli puro se necessário."""
@@ -207,6 +219,34 @@ def run_hostname(new_hostname, capture_output=True, text=True, timeout=10):
         except Exception as e:
             raise
 
+def run_power(action: str, capture_output=True, text=True, timeout=30):
+    """
+    Reinício/desligamento via wrapper com subcomandos fixos (sudoers).
+    action: reboot-now, halt-now, reboot-1, halt-1
+    """
+    valid = frozenset({"reboot-now", "halt-now", "reboot-1", "halt-1"})
+    if action not in valid:
+        raise ValueError(f"acao de energia invalida: {action!r}")
+    if os.path.isfile(POWER_WRAPPER) and os.access(POWER_WRAPPER, os.X_OK):
+        return subprocess.run(
+            ["sudo", "-n", POWER_WRAPPER, action],
+            capture_output=capture_output,
+            text=text,
+            timeout=timeout,
+        )
+    fallback_map = {
+        "reboot-now": ["shutdown", "-r", "now"],
+        "halt-now": ["shutdown", "-h", "now"],
+        "reboot-1": ["shutdown", "-r", "+1"],
+        "halt-1": ["shutdown", "-h", "+1"],
+    }
+    return subprocess.run(
+        ["sudo"] + fallback_map[action],
+        capture_output=capture_output,
+        text=text,
+        timeout=timeout,
+    )
+
 # Configurações — sempre relativas à pasta de app.py (INSTALL_DIR na instalação, src/ em dev)
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.join(_APP_DIR, "config")
@@ -227,413 +267,29 @@ CHROMIUM_USER_DATA_DIR = (
     else _DEFAULT_CHROMIUM_USER_DATA_DIR
 )
 
-# ========== GERENCIADOR DE FAVORITOS (INLINE) ==========
-class ChromiumFavoritesManager:
-    def __init__(self, username='administrador'):
-        self.username = username
-        self.home_dir = Path(f'/home/{username}')
-        # Mesmo caminho que --user-data-dir no autostart (env PI_MANAGER_CHROMIUM_USER_DATA_DIR)
-        self.chromium_profile_dir = Path(CHROMIUM_USER_DATA_DIR)
-        # Alias consistente usado pelo restante do código
-        self.chromium_dir = self.chromium_profile_dir
-        # Perfil ativo atual
-        self.active_profile = 'Default'
-        
-        # Define o arquivo de bookmarks no perfil personalizado
-        self.bookmarks_file = self.chromium_profile_dir / 'Default' / 'Bookmarks'
-        self.backup_dir = self.chromium_profile_dir / 'bookmarks_backup'
-        
-        # Garante que o diretório existe
-        self.bookmarks_file.parent.mkdir(parents=True, exist_ok=True)
-        
-        print(f"📁 Usando perfil personalizado: {self.chromium_profile_dir}")
-    
-    def detect_active_profile(self):
-        """Para perfil personalizado, sempre usa 'Default'"""
-        return 'Default'
-    
-    def find_all_profiles(self):
-        """Encontra todos os perfis no diretório personalizado - VERSÃO CORRIGIDA"""
-        profiles = []
-        try:
-            if self.chromium_profile_dir.exists():
-                for item in os.listdir(self.chromium_profile_dir):
-                    item_path = self.chromium_profile_dir / item
-                    if item_path.is_dir() and not item.startswith('.') and item != 'bookmarks_backup':
-                        has_bookmarks = (item_path / 'Bookmarks').exists()
-                        has_preferences = (item_path / 'Preferences').exists()
-                        if has_bookmarks or has_preferences:
-                            profiles.append(item)
-                        else:
-                            # ignorar diretórios de cache
-                            pass
-        except Exception as e:
-            print(f"Erro ao listar perfis: {e}")
 
-        if not profiles:
-            profiles = ['Default']
+def _chromium_managed_cmdline_regex() -> str:
+    """
+    Padrão ERE para pgrep/pkill -f: restringe ao Chromium que usa o perfil gerido
+    (--user-data-dir), evitando afetar outras instâncias.
+    """
+    return "--user-data-dir=" + re.escape(str(CHROMIUM_USER_DATA_DIR))
 
-        print(f"🔍 Perfis encontrados: {profiles}")
-        return profiles
 
-    def sync_to_all_profiles(self, urls):
-        """Sincroniza bookmarks em todos os perfis encontrados"""
-        all_success = True
-        messages = []
-        profiles = self.find_all_profiles()
-        if not profiles:
-            profiles = ['Default']
+def _log_unexpected(exc: BaseException, where: str) -> None:
+    """Log de exceções inesperadas quando PI_MANAGER_DEBUG_TRACEBACK está ativo."""
+    if os.environ.get("PI_MANAGER_DEBUG_TRACEBACK", "").lower() in ("1", "true", "yes"):
+        print(f"⚠️ [{where}] {exc!r}", flush=True)
+        traceback.print_exc()
 
-        folder_name = "Sites Gerenciados"
 
-        for profile in profiles:
-            profile_bookmarks = self.chromium_profile_dir / profile / 'Bookmarks'
-            profile_bookmarks.parent.mkdir(parents=True, exist_ok=True)
+from lib.chromium_favorites import ChromiumFavoritesManager
 
-            backup_dir = self.chromium_profile_dir / 'bookmarks_backup' / profile
-            backup_dir.mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_file = backup_dir / f'bookmarks_{timestamp}.bak'
-
-            if profile_bookmarks.exists():
-                try:
-                    shutil.copy2(profile_bookmarks, backup_file)
-                except Exception as e:
-                    messages.append(f"⚠️ Erro no backup do perfil {profile}: {e}")
-                    all_success = False
-
-            try:
-                if profile_bookmarks.exists():
-                    with open(profile_bookmarks, 'r', encoding='utf-8') as f:
-                        bookmarks_data = json.load(f)
-                else:
-                    bookmarks_data = self.create_bookmarks_structure([], folder_name)
-
-                bookmarks_data = self._upsert_managed_folder_in_bookmarks(bookmarks_data, urls, folder_name)
-                with open(profile_bookmarks, 'w', encoding='utf-8') as f:
-                    json.dump(bookmarks_data, f, indent=2, ensure_ascii=False)
-
-                try:
-                    uid, gid = self.get_user_ids()
-                    os.chown(profile_bookmarks, uid, gid)
-                    os.chmod(profile_bookmarks, 0o644)
-                except Exception as perm_error:
-                    messages.append(f"⚠️ Aviso de permissões para {profile}: {perm_error}")
-
-                messages.append(f"✅ Perfil {profile}: Sincronizado com {len(urls)} URLs")
-            except Exception as e:
-                messages.append(f"❌ Erro em {profile}: {e}")
-                all_success = False
-
-        return all_success, " | ".join(messages)
-        
-    def get_user_ids(self):
-        """Obtém o UID e GID do usuário"""
-        try:
-            uid = int(subprocess.check_output(['id', '-u', self.username]).strip())
-            gid = int(subprocess.check_output(['id', '-g', self.username]).strip())
-            return uid, gid
-        except Exception:
-            return 1000, 1000
-    
-    def backup_bookmarks(self):
-        """Cria um backup dos bookmarks atuais"""
-        try:
-            if not self.backup_dir.exists():
-                self.backup_dir.mkdir(parents=True, exist_ok=True)
-            
-            if self.bookmarks_file.exists():
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                backup_file = self.backup_dir / f'bookmarks_{timestamp}.bak'
-                shutil.copy2(self.bookmarks_file, backup_file)
-                print(f"✅ Backup criado: {backup_file}")
-                return True
-            return False
-        except Exception as e:
-            print(f"⚠️ Erro ao criar backup: {e}")
-            return False
-    
-    def load_current_favorites(self):
-        """Carrega os favoritos atuais do Chromium"""
-        if not self.bookmarks_file.exists():
-            print(f"📭 Arquivo de favoritos não encontrado: {self.bookmarks_file}")
-            return []
-        
-        try:
-            with open(self.bookmarks_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
-            favorites = []
-            
-            def extract_urls(node, folder_name=""):
-                if 'children' in node:
-                    for child in node.get('children', []):
-                        extract_urls(child, node.get('name', folder_name))
-                elif node.get('type') == 'url':
-                    url = node.get('url', '')
-                    name = node.get('name', '')
-                    if url and not url.startswith('chrome://'):
-                        favorites.append({
-                            'url': url,
-                            'name': name,
-                            'folder': folder_name
-                        })
-            
-            roots = data.get('roots', {})
-            for root_key in ['bookmark_bar', 'other', 'synced']:
-                if root_key in roots:
-                    extract_urls(roots[root_key], root_key)
-            
-            print(f"📖 {len(favorites)} favoritos carregados")
-            return favorites
-        except Exception as e:
-            print(f"❌ Erro ao carregar favoritos: {e}")
-            return []
-    
-    def create_bookmarks_structure(self, urls, folder_name="Sites Gerenciados"):
-        """Cria a estrutura JSON para os bookmarks - VERSÃO CORRIGIDA"""
-        import uuid
-        import time
-        
-        # Timestamp atual
-        timestamp = int(time.time() * 1000000)
-        
-        # Cria os itens dos bookmarks
-        children = []
-        for idx, url in enumerate(urls):
-            if not url or not url.strip():
-                continue
-            
-            url = url.strip()
-            # Formata o nome baseado na URL
-            try:
-                parsed = urlparse(url)
-                if parsed.scheme and parsed.netloc:
-                    name = parsed.netloc.replace('www.', '')
-                else:
-                    name = url.replace('http://', '').replace('https://', '').split('/')[0]
-            except Exception:
-                name = f"Site {idx + 1}"
-            
-            # Cria GUID no formato correto (32 caracteres com hífens)
-            guid = str(uuid.uuid4())
-            
-            children.append({
-                "date_added": str(timestamp + idx),
-                "guid": guid,
-                "id": str(idx + 100),  # IDs únicos
-                "meta_info": {"last_visited_desktop": "0"},
-                "name": name,
-                "type": "url",
-                "url": url
-            })
-        
-        if not children:
-            # Se não houver URLs, retorna estrutura vazia
-            bookmarks_bar = {
-                "children": [],
-                "date_added": "0",
-                "date_modified": "0",
-                "guid": "00000000-0000-4000-a000-000000000000",
-                "id": "1",
-                "name": "Barra de favoritos",
-                "type": "folder"
-            }
-        else:
-            # Cria pasta com os sites gerenciados
-            managed_folder = {
-                "children": children,
-                "date_added": str(timestamp),
-                "date_modified": str(timestamp),
-                "guid": str(uuid.uuid4()),
-                "id": "2",
-                "name": folder_name,
-                "type": "folder"
-            }
-            
-            bookmarks_bar = {
-                "children": [managed_folder],
-                "date_added": "0",
-                "date_modified": "0",
-                "guid": "00000000-0000-4000-a000-000000000000",
-                "id": "1",
-                "name": "Barra de favoritos",
-                "type": "folder"
-            }
-        
-        other = {
-            "children": [],
-            "date_added": "0",
-            "date_modified": "0",
-            "guid": "00000000-0000-4000-a000-000000000001",
-            "id": "3",
-            "name": "Outros favoritos",
-            "type": "folder"
-        }
-        
-        synced = {
-            "children": [],
-            "date_added": "0",
-            "date_modified": "0",
-            "guid": "00000000-0000-4000-a000-000000000002",
-            "id": "4",
-            "name": "Dispositivos móveis",
-            "type": "folder"
-        }
-        
-        return {
-            "checksum": "",
-            "roots": {
-                "bookmark_bar": bookmarks_bar,
-                "other": other,
-                "synced": synced
-            },
-            "version": 1
-        }
-
-    def _upsert_managed_folder_in_bookmarks(self, bookmarks_data, urls, folder_name):
-        """
-        Atualiza SOMENTE a pasta gerenciada (folder_name) dentro de um JSON de Bookmarks do Chromium,
-        preservando o restante (roots 'other' e 'synced' e outros favoritos).
-        """
-        roots = bookmarks_data.setdefault('roots', {})
-        bookmark_bar = roots.setdefault('bookmark_bar', {})
-
-        children = bookmark_bar.get('children')
-        if not isinstance(children, list):
-            children = []
-        bookmark_bar['children'] = children
-
-        managed_node = None
-        for node in children:
-            if node.get('type') == 'folder' and node.get('name') == folder_name:
-                managed_node = node
-                break
-
-        # Se não houver URLs, apenas limpa a pasta gerenciada (se existir)
-        if not urls:
-            if managed_node:
-                managed_node['children'] = []
-                managed_node['date_modified'] = str(int(time.time() * 1000000))
-            return bookmarks_data
-
-        # Gera somente o nó da pasta gerenciada a partir da estrutura "padrão"
-        temp = self.create_bookmarks_structure(urls, folder_name)
-        temp_children = (
-            temp.get('roots', {})
-            .get('bookmark_bar', {})
-            .get('children', [])
-        )
-
-        new_managed_node = None
-        for node in temp_children:
-            if node.get('type') == 'folder' and node.get('name') == folder_name:
-                new_managed_node = node
-                break
-
-        if new_managed_node is None and temp_children:
-            new_managed_node = temp_children[0]
-
-        if new_managed_node is None:
-            return bookmarks_data
-
-        if managed_node:
-            idx = children.index(managed_node)
-            children[idx] = new_managed_node
-        else:
-            children.append(new_managed_node)
-
-        bookmark_bar['children'] = children
-        return bookmarks_data
-    
-    def update_favorites(self, urls, folder_name="Sites Gerenciados"):
-        """Atualiza os favoritos do Chromium com as URLs configuradas"""
-        try:
-            print(f"🔄 Atualizando favoritos com {len(urls)} URLs...")
-
-            # 1. Garante que o diretório existe
-            self.bookmarks_file.parent.mkdir(parents=True, exist_ok=True)
-
-            # 2. Backup dos favoritos atuais
-            self.backup_bookmarks()
-
-            # 3. Carrega o JSON de Bookmarks (para preservar tudo que não é da pasta gerenciada)
-            if self.bookmarks_file.exists():
-                with open(self.bookmarks_file, 'r', encoding='utf-8') as f:
-                    bookmarks_data = json.load(f)
-            else:
-                bookmarks_data = self.create_bookmarks_structure([], folder_name)
-
-            # 4. Apenas para mensagem/telemetria: conta quantos favoritos "não gerenciados" existem
-            try:
-                existing_favs = self.load_current_favorites()
-                preserved_count = sum(
-                    1 for fav in existing_favs
-                    if fav.get('folder') != folder_name and fav.get('folder') != "Sites Gerenciados"
-                )
-            except Exception:
-                preserved_count = 0
-            
-            # 5. Upsert: substitui a pasta gerenciada no JSON existente
-            bookmarks_data = self._upsert_managed_folder_in_bookmarks(bookmarks_data, urls, folder_name)
-
-            # 6. Salva o arquivo
-            with open(self.bookmarks_file, 'w', encoding='utf-8') as f:
-                json.dump(bookmarks_data, f, indent=2, ensure_ascii=False)
-
-            # 7. Ajusta permissões
-            try:
-                uid, gid = self.get_user_ids()
-                os.chown(self.bookmarks_file, uid, gid)
-                os.chmod(self.bookmarks_file, 0o644)
-                
-                # Ajusta permissões do diretório também
-                for path in [self.bookmarks_file.parent, self.chromium_dir]:
-                    if path.exists():
-                        os.chown(path, uid, gid)
-                        os.chmod(path, 0o755)
-            except Exception as perm_error:
-                print(f"⚠️ Aviso de permissões: {perm_error}")
-            
-            print(f"✅ Favoritos atualizados com sucesso")
-            return True, f"Favoritos atualizados: {len(urls)} URLs definidas, {preserved_count} preservadas"
-            
-        except Exception as e:
-            print(f"❌ Erro ao atualizar favoritos: {e}")
-            import traceback
-            traceback.print_exc()
-            return False, f"Erro ao atualizar favoritos: {e}"
-    
-    def sync_favorites_with_config(self, config_urls):
-        """Sincroniza favoritos com URLs da configuração"""
-        try:
-            if not config_urls:
-                print("ℹ️ Nenhuma URL para sincronizar")
-                # Se não há URLs, apenas garante que a pasta gerenciada existe (vazia)
-                return self.update_favorites([], "Sites Gerenciados")
-            
-            # Garante que as URLs estão formatadas
-            formatted_urls = [url.strip() for url in config_urls if url.strip()]
-            print(f"🔄 Sincronizando {len(formatted_urls)} URLs...")
-            
-            # Atualiza favoritos
-            success, message = self.update_favorites(formatted_urls)
-            
-            if success:
-                print(f"✅ Favoritos sincronizados com sucesso")
-            else:
-                print(f"❌ Erro na sincronização: {message}")
-            
-            return success, message
-            
-        except Exception as e:
-            print(f"❌ Erro na sincronização: {e}")
-            import traceback
-            traceback.print_exc()
-            return False, f"Erro na sincronização: {e}"
-
-# Inicializa o gerenciador
-favorites_manager = ChromiumFavoritesManager()
+# Gerenciador de favoritos (implementação em lib/chromium_favorites.py)
+favorites_manager = ChromiumFavoritesManager(
+    username=ADMIN_USERNAME,
+    chromium_user_data_dir=str(CHROMIUM_USER_DATA_DIR),
+)
 
 # ========== FUNÇÕES AUXILIARES ==========
 def check_auth():
@@ -641,6 +297,179 @@ def check_auth():
     if os.environ.get('DEBUG_AUTH', '').lower() == 'true':
         print(f"DEBUG check_auth: authenticated={auth}", flush=True)
     return auth
+
+
+def _diagnostics_enabled() -> bool:
+    """
+    /api/diagnostic/* e /api/favorites/diagnostic só respondem se PI_MANAGER_DIAGNOSTICS=true
+    ou se Flask estiver em debug (desenvolvimento). Por omissão: desligado em produção.
+    """
+    raw = (os.environ.get("PI_MANAGER_DIAGNOSTICS") or "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return bool(app.debug)
+
+
+def _require_diagnostics_json():
+    """Retorna resposta 404 mínima se diagnóstico não permitido; senão None."""
+    if not _diagnostics_enabled():
+        return jsonify({"ok": False}), 404
+    return None
+
+
+def _client_ip_for_rate_limit() -> str:
+    """IP do cliente; opcionalmente X-Forwarded-For se PI_MANAGER_TRUST_PROXY estiver ativo."""
+    if os.environ.get("PI_MANAGER_TRUST_PROXY", "").lower() in ("1", "true", "yes"):
+        xff = (request.headers.get("X-Forwarded-For") or "").strip()
+        if xff:
+            return xff.split(",")[0].strip() or "unknown"
+    return (request.remote_addr or "").strip() or "unknown"
+
+
+_login_rate_lock = threading.Lock()
+# ip -> {"until": float, "fails": list[float]}
+_login_attempt_state: dict[str, dict] = {}
+
+
+def _login_rate_limit_config() -> tuple[bool, int, float, float]:
+    """
+    Retorna (ativo, max_falhas_na_janela, janela_seg, lockout_seg).
+    PI_MANAGER_LOGIN_RATE_LIMIT=0 desliga. max_falhas <= 0 desliga.
+    """
+    if os.environ.get("PI_MANAGER_LOGIN_RATE_LIMIT", "1").lower() in ("0", "false", "no", "off"):
+        return False, 0, 900.0, 600.0
+    try:
+        max_fails = int(os.environ.get("PI_MANAGER_LOGIN_MAX_FAILS", "8"))
+    except ValueError:
+        max_fails = 8
+    try:
+        window = float(os.environ.get("PI_MANAGER_LOGIN_WINDOW_SEC", "900"))
+    except ValueError:
+        window = 900.0
+    try:
+        lockout = float(os.environ.get("PI_MANAGER_LOGIN_LOCKOUT_SEC", "600"))
+    except ValueError:
+        lockout = 600.0
+    if max_fails <= 0:
+        return False, 0, window, lockout
+    return True, max_fails, window, lockout
+
+
+def _login_rate_limited_response():
+    """Se o IP está em lockout, retorna (template_html, status); senão None."""
+    enabled, _, _, _ = _login_rate_limit_config()
+    if not enabled:
+        return None
+    ip = _client_ip_for_rate_limit()
+    now = time.time()
+    with _login_rate_lock:
+        st = _login_attempt_state.get(ip)
+        if not st:
+            return None
+        until = float(st.get("until") or 0)
+        if now < until:
+            wait_s = max(1, int(until - now) + 1)
+            return (
+                render_template(
+                    "login.html",
+                    error=(
+                        f"Muitas tentativas de login. Aguarde cerca de {wait_s} segundos "
+                        "antes de tentar novamente."
+                    ),
+                ),
+                429,
+            )
+    return None
+
+
+def _login_record_auth_failure() -> None:
+    """Regista falha de palavra-passe (não chamar para erro CSRF ou PAM indisponível)."""
+    enabled, max_fails, window_sec, lockout_sec = _login_rate_limit_config()
+    if not enabled:
+        return
+    ip = _client_ip_for_rate_limit()
+    now = time.time()
+    with _login_rate_lock:
+        st = _login_attempt_state.setdefault(ip, {"until": 0.0, "fails": []})
+        until = float(st.get("until") or 0)
+        if now < until:
+            return
+        fails: list = st.setdefault("fails", [])
+        fails.append(now)
+        st["fails"] = [t for t in fails if now - t < window_sec]
+        if len(st["fails"]) >= max_fails:
+            st["until"] = now + lockout_sec
+            st["fails"] = []
+
+
+def _login_clear_rate_limit() -> None:
+    with _login_rate_lock:
+        _login_attempt_state.pop(_client_ip_for_rate_limit(), None)
+
+
+def _is_safe_nm_connection_name(name: str) -> bool:
+    """Evita injeção de argumentos / metacaracteres em nmcli via nome na URL."""
+    if not name or len(name) > 256:
+        return False
+    forbidden = set(';|&$`<>\\"\n\r\t\x00')
+    if any(c in forbidden for c in name):
+        return False
+    if name.startswith((".", "/")) or ".." in name:
+        return False
+    return True
+
+
+@app.before_request
+def _csrf_middleware():
+    path = request.path or ""
+    if path.startswith("/static"):
+        return None
+
+    if request.endpoint == "login" and request.method == "GET":
+        if not session.get("_csrf_token"):
+            session["_csrf_token"] = secrets.token_hex(32)
+            session.modified = True
+        return None
+
+    if session.get("authenticated") and not session.get("_csrf_token"):
+        session["_csrf_token"] = secrets.token_hex(32)
+        session.modified = True
+
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return None
+
+    if path.startswith("/webhook"):
+        return None
+    if path == "/api/health":
+        return None
+
+    if path == "/login" and request.method == "POST":
+        if session.get("authenticated"):
+            return None
+        tok = session.get("_csrf_token")
+        sent = request.form.get("csrf_token") if request.form else None
+        if not tok or not sent or not hmac.compare_digest(str(sent), str(tok)):
+            return (
+                render_template(
+                    "login.html",
+                    error="Pedido invalido (CSRF). Atualize a pagina e tente de novo.",
+                ),
+                403,
+            )
+        return None
+
+    if path.startswith("/api/") and check_auth():
+        tok = session.get("_csrf_token")
+        if not tok:
+            return jsonify({"error": "CSRF: faca login novamente ou recarregue a pagina."}), 403
+        sent = request.headers.get("X-CSRF-Token") or request.headers.get("X-XSRF-Token")
+        if not sent or not hmac.compare_digest(str(sent), str(tok)):
+            return jsonify({"error": "Token CSRF invalido ou ausente. Recarregue a pagina."}), 403
+
+    return None
+
 
 def get_cpu_usage():
     try:
@@ -689,7 +518,7 @@ def load_autostart_urls():
     """
     try:
         if not os.path.exists(AUTOSTART_CONFIG):
-            print("📭 Arquivo autostart.conf não encontrado ou vazio")
+            print(format_log_line("📭 Arquivo autostart.conf não encontrado ou vazio"))
             return []
         with open(AUTOSTART_CONFIG, "r", encoding="utf-8", errors="replace") as f:
             candidates: list[str] = []
@@ -704,61 +533,17 @@ def load_autostart_urls():
             if is_valid_url_or_ip(fu):
                 urls.append(fu)
             else:
-                print(f"⚠️ autostart.conf: linha ignorada (URL inválida): {item[:80]!r}")
-        print(f"📋 URLs carregadas do autostart.conf: {urls}")
+                print(
+                    format_log_line(
+                        f"⚠️ autostart.conf: linha ignorada (URL inválida): {item[:80]!r}"
+                    )
+                )
+        print(format_log_line(f"📋 URLs carregadas do autostart.conf: {urls}"))
         return urls
     except Exception as e:
         print(f"Erro ao carregar URLs: {e}")
         return []
 
-def is_valid_url_or_ip(url):
-    url = url.strip()
-    if not url:
-        return True
-    if url.startswith(('http://', 'https://')):
-        try:
-            result = urlparse(url)
-            return all([result.scheme, result.netloc])
-        except Exception:
-            return False
-    ip_port_pattern = r'^(\d{1,3}\.){3}\d{1,3}:\d+$'
-    if re.match(ip_port_pattern, url):
-        ip_part = url.split(':')[0]; port_part = url.split(':')[1]
-        parts = ip_part.split('.')
-        if len(parts) == 4:
-            for part in parts:
-                if not part.isdigit() or not 0 <= int(part) <= 255:
-                    return False
-            if port_part.isdigit() and 1 <= int(port_part) <= 65535:
-                return True
-        return False
-    ip_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
-    if re.match(ip_pattern, url):
-        parts = url.split('.')
-        if len(parts) == 4:
-            for part in parts:
-                if not part.isdigit() or not 0 <= int(part) <= 255:
-                    return False
-            return True
-        return False
-    hostname_port_pattern = r'^[a-zA-Z0-9][a-zA-Z0-9.-]*:\d+$'
-    if re.match(hostname_port_pattern, url):
-        port_part = url.split(':')[1]
-        if port_part.isdigit() and 1 <= int(port_part) <= 65535:
-            return True
-    hostname_pattern = r'^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$'
-    if re.match(hostname_pattern, url) or url == 'localhost':
-        return True
-    return False
-
-def format_url(url):
-    if not url.strip():
-        return url
-    if url.startswith(('http://', 'https://')):
-        return url
-    if '://' not in url:
-        return 'http://' + url
-    return url
 
 def _pam_call_returns_bool(auth_fn, *args, **kwargs) -> Optional[bool]:
     """
@@ -851,6 +636,7 @@ def sync_chromium_favorites():
         return success, message
         
     except Exception as e:
+        _log_unexpected(e, "sync_chromium_favorites")
         add_event(f"❌ Erro na sincronização de favoritos: {e}")
         return False, str(e)
 
@@ -905,8 +691,8 @@ def _sudo_rm_chromium_singleton_artifacts(base_dir: str, max_depth: str = "4") -
             stderr=subprocess.DEVNULL,
             timeout=60,
         )
-    except Exception:
-        pass
+    except (OSError, subprocess.SubprocessError) as e:
+        _log_unexpected(e, "_remove_chromium_singleton_files")
 
 
 def cleanup_chromium_locks():
@@ -924,7 +710,7 @@ def cleanup_chromium_locks():
         # 1. Sem wrapper: tenta pkill (só funciona se sudo o permitir). Com wrapper, o pkill é feito lá como root.
         if not use_wrapper:
             subprocess.run(
-                ["sudo", "pkill", "-9", "-f", "chromium"],
+                ["sudo", "pkill", "-9", "-f", _chromium_managed_cmdline_regex()],
                 stderr=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
             )
@@ -956,6 +742,7 @@ def cleanup_chromium_locks():
         return True
         
     except Exception as e:
+        _log_unexpected(e, "cleanup_chromium_locks")
         add_event(f"❌ Erro ao limpar locks do Chromium: {e}")
         # Não levanta exceção - apenas loga e continua
         return False
@@ -996,14 +783,15 @@ def _chromium_probable_singleton_issue(log_text: str) -> bool:
 def _chromium_is_running() -> bool:
     try:
         r = subprocess.run(
-            ["pgrep", "-f", "chromium"],
+            ["pgrep", "-f", _chromium_managed_cmdline_regex()],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
             timeout=5,
         )
         return bool(r.stdout and r.stdout.strip())
-    except Exception:
+    except (OSError, subprocess.SubprocessError) as e:
+        _log_unexpected(e, "_chromium_is_running")
         return False
 
 
@@ -1013,19 +801,17 @@ def _chromium_managed_profile_running() -> bool:
     Evita segunda abertura no boot (ex.: autostart legado + serviço) e evita cleanup de locks
     com o browser aberto.
     """
-    marker = CHROMIUM_USER_DATA_DIR
     try:
         r = subprocess.run(
-            ["pgrep", "-af", "chromium"],
+            ["pgrep", "-f", _chromium_managed_cmdline_regex()],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
             timeout=5,
         )
-        if r.returncode != 0 or not (r.stdout and r.stdout.strip()):
-            return False
-        return marker in r.stdout
-    except Exception:
+        return r.returncode == 0 and bool(r.stdout and r.stdout.strip())
+    except (OSError, subprocess.SubprocessError) as e:
+        _log_unexpected(e, "_chromium_managed_profile_running")
         return False
 
 
@@ -1135,7 +921,7 @@ def open_browser_with_urls():
         time.sleep(3)
         if _chromium_is_running():
             result = subprocess.run(
-                ["pgrep", "-f", "chromium"],
+                ["pgrep", "-f", _chromium_managed_cmdline_regex()],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
@@ -1172,7 +958,7 @@ def open_browser_with_urls():
 
             if _chromium_is_running():
                 result = subprocess.run(
-                    ["pgrep", "-f", "chromium"],
+                    ["pgrep", "-f", _chromium_managed_cmdline_regex()],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     text=True,
@@ -1197,15 +983,15 @@ def open_browser_with_urls():
                 pass
         
     except Exception as e:
+        _log_unexpected(e, "open_browser_with_urls")
         add_event(f"❌ Erro ao abrir browser: {e}")
-        import traceback
         traceback.print_exc()
 
 # ========== CONTEXT PROCESSOR - Disponibiliza variáveis em todas as templates ==========
 @app.context_processor
 def inject_version():
-    """Disponibiliza APP_VERSION em todas as templates"""
-    return dict(app_version=APP_VERSION)
+    """Disponibiliza APP_VERSION e token CSRF nas templates"""
+    return dict(app_version=APP_VERSION, csrf_token=session.get("_csrf_token", ""))
 
 
 def _pyvenv_includes_system_site_packages() -> Optional[bool]:
@@ -1230,7 +1016,15 @@ def api_health():
     """
     Estado mínimo sem autenticação — útil quando o login PAM falha no Raspberry.
     Não expõe segredos; mensagem de erro de import é truncada.
+    Opcional: PI_MANAGER_HEALTH_SECRET — exige cabeçalho X-Health-Secret com o mesmo valor.
     """
+    health_secret = (os.environ.get("PI_MANAGER_HEALTH_SECRET") or "").strip()
+    if health_secret:
+        cand = (request.headers.get("X-Health-Secret") or "").strip()
+        a, b = cand.encode("utf-8"), health_secret.encode("utf-8")
+        if len(a) != len(b) or not hmac.compare_digest(a, b):
+            return jsonify({"ok": False}), 404
+
     pam_loaded = get_pam_module() is not None
     err = _PAM_IMPORT_ERROR
     err_short = (str(err)[:240] + "…") if err and len(str(err)) > 240 else (str(err) if err else None)
@@ -1391,6 +1185,8 @@ def get_system_events():
 def get_connection_detail(name):
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
+    if not _is_safe_nm_connection_name(name):
+        return jsonify({'error': 'Nome de conexão inválido'}), 400
     try:
         # Get connection properties
         result = run_nmcli(['-t', '-f', 'all', 'connection', 'show', name])
@@ -1444,7 +1240,9 @@ def get_connection_detail(name):
 def update_connection(name):
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
-    data = request.json or {}
+    if not _is_safe_nm_connection_name(name):
+        return jsonify({'error': 'Nome de conexão inválido'}), 400
+    data = request.get_json(silent=True) or {}
     try:
         connection_type = data.get('type', '')
         ip_type = data.get('ip_type')
@@ -1517,6 +1315,8 @@ def update_connection(name):
 def delete_connection_api(name):
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
+    if not _is_safe_nm_connection_name(name):
+        return jsonify({'error': 'Nome de conexão inválido'}), 400
     try:
         res = run_nmcli(['connection', 'delete', name])
         if res.returncode != 0:
@@ -1531,6 +1331,8 @@ def delete_connection_api(name):
 def test_connection_api(name):
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
+    if not _is_safe_nm_connection_name(name):
+        return jsonify({'error': 'Nome de conexão inválido'}), 400
     try:
         res = run_nmcli(['connection', 'up', name])
         if res.returncode != 0:
@@ -1552,7 +1354,7 @@ def change_hostname():
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
     
-    data = request.json
+    data = request.get_json(silent=True) or {}
     new_hostname = data.get('hostname')
     
     try:
@@ -1578,18 +1380,7 @@ def change_hostname():
             # ✅ SUCESSO: Não mexer no Chromium/locks para preservar operação e evitar erros.
             add_event(f"✅ Hostname alterado para {new_hostname}. Preservando Chromium/locks.")
 
-            chromium_running = False
-            try:
-                check = subprocess.run(
-                    ['pgrep', '-f', 'chromium'],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    text=True,
-                    timeout=5
-                )
-                chromium_running = bool(check.stdout and check.stdout.strip())
-            except Exception:
-                chromium_running = False
+            chromium_running = _chromium_managed_profile_running()
 
             if chromium_running:
                 return jsonify({
@@ -1621,11 +1412,11 @@ def change_hostname():
 def change_password():
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
-    data = request.json
+    data = request.get_json(silent=True) or {}
     new_password = data.get('password')
     try:
-        if not new_password or len(new_password) < 3:
-            return jsonify({'error': 'Senha deve ter pelo menos 3 caracteres'}), 400
+        if not new_password or len(new_password) < MIN_PASSWORD_LENGTH:
+            return jsonify({'error': f'Senha deve ter pelo menos {MIN_PASSWORD_LENGTH} caracteres'}), 400
         result = run_chpasswd('administrador', new_password)
         if result.returncode == 0:
             return jsonify({'success': True, 'message': 'Senha alterada com sucesso'})
@@ -1639,7 +1430,7 @@ def reboot_system():
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
     try:
-        subprocess.run(['sudo', 'shutdown', '-r', '+1'], capture_output=True)
+        run_power('reboot-1', capture_output=True)
         return jsonify({'success': True, 'message': 'Sistema será reiniciado em 1 minuto'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1649,7 +1440,7 @@ def shutdown_system():
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
     try:
-        subprocess.run(['sudo', 'shutdown', '-h', '+1'], capture_output=True)
+        run_power('halt-1', capture_output=True)
         return jsonify({'success': True, 'message': 'Sistema será desligado em 1 minuto'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1659,7 +1450,7 @@ def reboot_now():
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
     try:
-        subprocess.run(['sudo', 'shutdown', '-r', 'now'], capture_output=True)
+        run_power('reboot-now', capture_output=True)
         return jsonify({'success': True, 'message': 'Reiniciando agora...'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1669,7 +1460,7 @@ def shutdown_now():
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
     try:
-        subprocess.run(['sudo', 'shutdown', '-h', 'now'], capture_output=True)
+        run_power('halt-now', capture_output=True)
         return jsonify({'success': True, 'message': 'Desligando agora...'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1821,7 +1612,7 @@ def scan_wifi():
 def configure_network():
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     connection_type = data.get('type')
     connection_name = data.get('name')
     ip_type = data.get('ip_type', 'dhcp')
@@ -1941,7 +1732,7 @@ def manage_autostart():
             return jsonify({'error': str(e)}), 500
     
     elif request.method == 'POST':
-        data = request.json
+        data = request.get_json(silent=True) or {}
         urls = data.get('urls', [])
         try:
             # Valida URLs
@@ -2009,6 +1800,9 @@ def get_current_favorites():
 @app.route('/api/favorites/diagnostic', methods=['GET'])
 def diagnostic_favorites():
     """Diagnóstico completo dos favoritos"""
+    gate = _require_diagnostics_json()
+    if gate is not None:
+        return gate
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
     
@@ -2112,7 +1906,7 @@ def set_chromium_profile():
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
     
-    data = request.json
+    data = request.get_json(silent=True) or {}
     profile_name = data.get('profile')
     
     if not profile_name:
@@ -2166,10 +1960,13 @@ def force_sync_favorites():
             # 4. Força recarregamento no Chromium
             try:
                 # Envia sinal para Chromium recarregar favoritos
-                subprocess.run(['sudo', 'pkill', '-HUP', 'chromium'], 
-                              capture_output=True, stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
+                subprocess.run(
+                    ["sudo", "pkill", "-HUP", "-f", _chromium_managed_cmdline_regex()],
+                    capture_output=True,
+                    stderr=subprocess.DEVNULL,
+                )
+            except (OSError, subprocess.SubprocessError) as e:
+                _log_unexpected(e, "force_sync_favorites pkill")
             
             return jsonify({
                 'success': True,
@@ -2386,6 +2183,9 @@ def restart_browser():
 @app.route('/api/diagnostic/browser', methods=['GET'])
 def diagnostic_browser():
     """Verifica se o browser pode ser aberto"""
+    gate = _require_diagnostics_json()
+    if gate is not None:
+        return gate
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
     
@@ -2417,10 +2217,13 @@ def diagnostic_browser():
 @app.route('/api/diagnostic/wrappers', methods=['GET'])
 def diagnostic_wrappers():
     """Relata existência, permissões e tentativa de execução via sudo -n dos wrappers"""
+    gate = _require_diagnostics_json()
+    if gate is not None:
+        return gate
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
 
-    wrappers = [NMCLI_WRAPPER, CHPASS_WRAPPER, HOSTNAME_WRAPPER, CHROMIUM_LOCKS_WRAPPER]
+    wrappers = [NMCLI_WRAPPER, CHPASS_WRAPPER, HOSTNAME_WRAPPER, CHROMIUM_LOCKS_WRAPPER, POWER_WRAPPER]
     info = {}
     for w in wrappers:
         item = {
@@ -2453,6 +2256,9 @@ def diagnostic_wrappers():
 @app.route('/api/diagnostic/session', methods=['GET'])
 def diagnostic_session():
     """Debug endpoint: mostra o conteúdo da sessão e cookies recebidos (apenas local)."""
+    gate = _require_diagnostics_json()
+    if gate is not None:
+        return gate
     try:
         if not check_auth():
             # Mantém o endpoint mais seguro: exige autenticação
@@ -2468,6 +2274,10 @@ def diagnostic_session():
 def login():
     """Rota de login simples autenticando a senha REAL do usuário `administrador` via PAM."""
     if request.method == 'POST':
+        blocked = _login_rate_limited_response()
+        if blocked is not None:
+            return blocked
+
         # aceita formulário ou JSON
         password = request.form.get('password') if request.form else None
         if not password and request.is_json:
@@ -2475,6 +2285,7 @@ def login():
         password = (password or "").strip()
 
         if not password:
+            _login_record_auth_failure()
             return render_template('login.html', error='Senha invalida.')
 
         mod = get_pam_module()
@@ -2494,9 +2305,13 @@ def login():
             )
 
         if verify_admin_password(password):
+            _login_clear_rate_limit()
             session['authenticated'] = True
+            session['_csrf_token'] = secrets.token_hex(32)
+            session.modified = True
             return redirect(url_for('index'))
         # mostrar página com erro
+        _login_record_auth_failure()
         return render_template('login.html', error='Senha invalida.')
     return render_template('login.html')
 
@@ -2504,6 +2319,7 @@ def login():
 @app.route('/logout')
 def logout():
     session.pop('authenticated', None)
+    session.pop('_csrf_token', None)
     return redirect(url_for('login'))
 
 
@@ -2572,8 +2388,10 @@ def startup_tasks():
     browser_thread.daemon = True
     browser_thread.start()
 
-with app.app_context():
-    startup_tasks()
+# Testes: definir SKIP_STARTUP_TASKS=1 (pytest em tests/conftest.py) para evitar sleeps/threads na importação.
+if os.environ.get("SKIP_STARTUP_TASKS", "").lower() not in ("1", "true", "yes"):
+    with app.app_context():
+        startup_tasks()
 
 
 @app.route('/about')
@@ -2582,31 +2400,8 @@ def about():
 
 
 def _is_allowed_update_script(path: str) -> bool:
-    """Evita executar bash em caminho arbitrário se app.root_path for manipulado."""
-    try:
-        rp = os.path.realpath(path)
-    except OSError:
-        return False
-    if os.path.basename(rp) != "update_app.sh":
-        return False
-    candidates = [
-        app.root_path,
-        os.path.abspath(os.path.join(app.root_path, "..")),
-        "/home/administrador/raspberry-pi-manager",
-        "/opt/raspberry-pi-manager",
-    ]
-    for _key in ("APP_INSTALL_DIR", "PI_MANAGER_INSTALL_DIR"):
-        _dir = os.environ.get(_key, "").strip()
-        if _dir:
-            candidates.append(_dir)
-    for c in candidates:
-        try:
-            root = os.path.realpath(c)
-        except OSError:
-            continue
-        if rp == root or rp.startswith(root + os.sep):
-            return True
-    return False
+    """Delega para lib.update_allowlist (testável)."""
+    return _is_allowed_update_script_lib(path, app_root_path=app.root_path)
 
 
 @app.route('/webhook', methods=['POST'])
@@ -2663,6 +2458,10 @@ def webhook():
 
 if __name__ == '__main__':
     debug_mode = os.environ.get('DEBUG', 'False').lower() == 'true'
-    print(f"🚀 Iniciando servidor Flask em modo {'debug' if debug_mode else 'produção'}...")
-    print(f"🌐 Acesse em: http://0.0.0.0:5000")
+    print(
+        format_log_line(
+            f"🚀 Iniciando servidor Flask em modo {'debug' if debug_mode else 'produção'}..."
+        )
+    )
+    print(format_log_line("🌐 Acesse em: http://0.0.0.0:5000"))
     app.run(host='0.0.0.0', port=5000, debug=debug_mode, threaded=True)

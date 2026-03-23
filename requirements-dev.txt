@@ -1,0 +1,3 @@
+# Desenvolvimento / CI (opcional)
+pytest>=7.4.0
+mypy>=1.8.0

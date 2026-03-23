@@ -105,11 +105,45 @@ if [ -x "$VENV_PIP" ] && [ -f "${APP_ROOT}/requirements.txt" ]; then
     if [ "$(id -u)" -eq 0 ] && id administrador >/dev/null 2>&1; then
         sudo -u administrador "$VENV_PIP" install --upgrade pip >>"$LOGFILE" 2>&1 || true
         sudo -u administrador "$VENV_PIP" install -r "${APP_ROOT}/requirements.txt" >>"$LOGFILE" 2>&1 || true
-        sudo -u administrador "$VENV_PIP" uninstall -y python-pam >>"$LOGFILE" 2>&1 || true
+        VENV_PY="${APP_ROOT}/venv/bin/python"
+        if [ -x "$VENV_PY" ]; then
+            _PAML="${APP_ROOT}/scripts/lib-pam-venv.sh"
+            if [ -f "$_PAML" ]; then
+                # shellcheck source=scripts/lib-pam-venv.sh
+                source "$_PAML"
+                ensure_pam_in_venv_for_path "${APP_ROOT}/venv" administrador >>"$LOGFILE" 2>&1 || true
+            else
+                if sudo -u administrador "$VENV_PY" -c "import pam; assert callable(getattr(pam,'authenticate',None))" >>"$LOGFILE" 2>&1; then
+                    sudo -u administrador "$VENV_PIP" uninstall -y python-pam >>"$LOGFILE" 2>&1 || true
+                    if ! sudo -u administrador "$VENV_PY" -c "import pam" >>"$LOGFILE" 2>&1; then
+                        sudo -u administrador "$VENV_PIP" install --no-cache-dir 'python-pam>=2.0.2' 'six>=1.16.0' >>"$LOGFILE" 2>&1 || true
+                    fi
+                else
+                    sudo -u administrador "$VENV_PIP" install --no-cache-dir 'python-pam>=2.0.2' 'six>=1.16.0' >>"$LOGFILE" 2>&1 || true
+                fi
+            fi
+        fi
     else
         "$VENV_PIP" install --upgrade pip >>"$LOGFILE" 2>&1 || true
         "$VENV_PIP" install -r "${APP_ROOT}/requirements.txt" >>"$LOGFILE" 2>&1 || true
-        "$VENV_PIP" uninstall -y python-pam >>"$LOGFILE" 2>&1 || true
+        VENV_PY="${APP_ROOT}/venv/bin/python"
+        if [ -x "$VENV_PY" ]; then
+            _PAML="${APP_ROOT}/scripts/lib-pam-venv.sh"
+            if [ -f "$_PAML" ]; then
+                # shellcheck source=scripts/lib-pam-venv.sh
+                source "$_PAML"
+                ensure_pam_in_venv_for_path "${APP_ROOT}/venv" "" >>"$LOGFILE" 2>&1 || true
+            else
+                if "$VENV_PY" -c "import pam; assert callable(getattr(pam,'authenticate',None))" >>"$LOGFILE" 2>&1; then
+                    "$VENV_PIP" uninstall -y python-pam >>"$LOGFILE" 2>&1 || true
+                    if ! "$VENV_PY" -c "import pam" >>"$LOGFILE" 2>&1; then
+                        "$VENV_PIP" install --no-cache-dir 'python-pam>=2.0.2' 'six>=1.16.0' >>"$LOGFILE" 2>&1 || true
+                    fi
+                else
+                    "$VENV_PIP" install --no-cache-dir 'python-pam>=2.0.2' 'six>=1.16.0' >>"$LOGFILE" 2>&1 || true
+                fi
+            fi
+        fi
     fi
     echo "[$(date -Iseconds)] venv pip install done" >>"$LOGFILE"
 elif [ -f "${APP_ROOT}/requirements.txt" ]; then
@@ -131,3 +165,33 @@ if command -v systemctl >/dev/null 2>&1; then
 fi
 
 echo "[$(date -Iseconds)] Update finished" >>"$LOGFILE"
+
+# --- Verificação explícita PAM (login web) ---
+PAM_FINAL_OK=1
+VENV_PY="${APP_ROOT}/venv/bin/python"
+if [ -x "$VENV_PY" ]; then
+    if [ "$(id -u)" -eq 0 ] && id administrador >/dev/null 2>&1; then
+        if sudo -u administrador "$VENV_PY" -c "import pam; assert callable(getattr(pam,'authenticate',None))" >>"$LOGFILE" 2>&1; then
+            echo "[$(date -Iseconds)] PAM final check: OK" >>"$LOGFILE"
+        else
+            echo "[$(date -Iseconds)] ERROR PAM final check: FAILED (login web pode falhar)" >>"$LOGFILE"
+            PAM_FINAL_OK=0
+        fi
+    else
+        if "$VENV_PY" -c "import pam; assert callable(getattr(pam,'authenticate',None))" >>"$LOGFILE" 2>&1; then
+            echo "[$(date -Iseconds)] PAM final check: OK" >>"$LOGFILE"
+        else
+            echo "[$(date -Iseconds)] ERROR PAM final check: FAILED (login web pode falhar)" >>"$LOGFILE"
+            PAM_FINAL_OK=0
+        fi
+    fi
+else
+    echo "[$(date -Iseconds)] WARN PAM final check: venv python missing at $VENV_PY" >>"$LOGFILE"
+fi
+
+if [ "${UPDATE_APP_STRICT_PAM:-0}" = "1" ] && [ "$PAM_FINAL_OK" != "1" ]; then
+    echo "[$(date -Iseconds)] EXIT 1 (UPDATE_APP_STRICT_PAM=1 e PAM inválido)" >>"$LOGFILE"
+    exit 1
+fi
+
+exit 0

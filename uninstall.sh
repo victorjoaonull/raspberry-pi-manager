@@ -142,6 +142,7 @@ WRAPPERS=(
     /usr/local/bin/pi-manager-hostname
     /usr/local/bin/pi-manager-ensure-deps
     /usr/local/bin/pi-manager-chromium-clean-locks
+    /usr/local/bin/pi-manager-power
 )
 for f in "${WRAPPERS[@]}"; do
     if [ -f "$f" ]; then
@@ -157,7 +158,7 @@ if [ -f /etc/sudoers.d/pi-manager ]; then
 fi
 
 # --- logs do instalador ---
-for logf in /var/log/pi-manager-nmcli.log /var/log/pi-manager-chpasswd.log /var/log/pi-manager-hostname.log; do
+for logf in /var/log/pi-manager-nmcli.log /var/log/pi-manager-chpasswd.log /var/log/pi-manager-hostname.log /var/log/pi-manager-power.log; do
     if [ -f "$logf" ]; then
         rm -f "$logf"
         echo -e "${GREEN}✅ Removido $logf${NC}"
