@@ -59,7 +59,8 @@ FOUND=()
 
 _add_if_legacy_dir() {
     local d="$1"
-    [ -d "$d" ] || return
+    # Com set -e, "|| return" sem código devolve 1 de [ e aborta o script inteiro.
+    [ -d "$d" ] || return 0
     local D_REAL
     D_REAL="$(realpath "$d" 2>/dev/null || echo "$d")"
     if [ "$D_REAL" = "$REPO_DIR_REAL" ]; then
@@ -97,9 +98,27 @@ else
     fi
 fi
 
-# Deduplicar (bash 4+)
+# Deduplicar sem readarray/sort (evita exit por set -e em alguns Bash/Pi OS)
+_dedupe_legacy_found() {
+    local -a out=()
+    local x y dup
+    for x in "${FOUND[@]}"; do
+        [ -z "$x" ] && continue
+        dup=0
+        for y in "${out[@]}"; do
+            if [ "$x" = "$y" ]; then
+                dup=1
+                break
+            fi
+        done
+        if [ "$dup" -eq 0 ]; then
+            out+=("$x")
+        fi
+    done
+    FOUND=("${out[@]}")
+}
 if [ ${#FOUND[@]} -gt 0 ]; then
-    readarray -t FOUND < <(printf '%s\n' "${FOUND[@]}" | sort -u)
+    _dedupe_legacy_found
 fi
 
 if [ ${#FOUND[@]} -gt 0 ]; then
