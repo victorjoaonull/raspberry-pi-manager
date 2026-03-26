@@ -22,6 +22,50 @@ Um gerenciador web completo para Raspberry Pi com controle de rede, sistema, aut
 
 ---
 
+## Guia: instalar no Raspberry Pi e configurar
+
+Este repositório instala um **painel web** (Flask) que corre como **serviço systemd** com o nome por omissão `raspberry-pi-manager`, executado pelo utilizador Linux **`administrador`**. O **login da interface** valida a **mesma palavra-passe** desse utilizador via **PAM** (não há base de dados de utilizadores na app). A **rede** no painel usa **NetworkManager** (`nmcli` através de wrappers com permissões controladas em `sudoers`). O **Chromium** usa um **perfil dedicado** (`--user-data-dir`, por omissão `~/chromium-profile`) para autostart, favoritos e evitar conflitos com outras instâncias.
+
+### Fluxo geral do instalador (`install.sh`)
+
+1. **Ambiente**: confirma que o hardware é Raspberry Pi, que corre como **root** (`sudo`) e cria o utilizador **`administrador`** com palavra-passe inicial `raspberry` se ainda não existir (deve alterar logo após o primeiro acesso).
+2. **Assistente opcional** (`scripts/install-wizard.sh`): em terminal interativo, **ENTER** aceita a configuração recomendada (cópia local do repositório para `/home/administrador/raspberry-pi-manager`); **`o`** abre opções simples (clonar do GitHub, pasta de instalação, rede temporária durante o `apt`, limpeza alargada de pastas antigas). Em automação: `PI_MANAGER_INSTALL_INTERACTIVE=0`.
+3. **Limpeza de instalações antigas**: remove apenas pastas com nomes previsíveis (`raspberry-pi-manager` / `raspberry_pi_manager`) em caminhos seguros; a varredura larga `*pi-manager*` exige `PI_MANAGER_LEGACY_WIDE_CLEANUP=1`.
+4. **Variáveis** como `INSTALL_DIR`, `PI_MANAGER_CHROMIUM_USER_DATA_DIR`, `CLONE_FROM_GITHUB` podem ser definidas **antes** de correr o script (ou via assistente).
+5. **Rede opcional para atualizações**: se `PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1`, o script pode guardar o IPv4 atual, aplicar um endereço temporário (ex. rede de gestão) durante o `apt`, e restaurar — requer `nmcli` / NetworkManager (ver tabela mais abaixo).
+6. **Conectividade** (`[1.5/12]`): ping para confirmar acesso à Internet antes do `apt`.
+7. **Pré-voo** (`[1.6/12]`, `scripts/install-preflight-checks.sh`): após haver rede, verifica **UTF-8** (recomendado para a UI e logs); opcionalmente **espaço em disco** e **memória**. Variáveis: `PI_MANAGER_SKIP_PREFLIGHT`, `PI_MANAGER_UTF8_AUTO_FIX`, `PI_MANAGER_STRICT_LOCALE`, `PI_MANAGER_PREFLIGHT_BASIC`.
+8. **`apt upgrade`** e instalação de dependências (entre elas **nginx**, **git**, **chromium**, **network-manager**, **python3-pam**, etc.).
+9. **Cópia do projeto** para `INSTALL_DIR` (ou clone do GitHub se configurado), cópia de `update_app.sh`, wrappers em `/usr/local/bin`, **venv** Python com suporte a **PAM** do sistema, `requirements.txt`.
+10. **Ficheiro de ambiente** `/etc/default/raspberry-pi-manager` (ex.: `APP_INSTALL_DIR`, `FLASK_SECRET_KEY` gerada se faltar, `PI_MANAGER_CHROMIUM_USER_DATA_DIR`).
+11. **Unit systemd** em `/etc/systemd/system/raspberry-pi-manager.service`, utilizador **administrador**, `EnvironmentFile` apontando para `/etc/default/...`.
+12. **Auto-login gráfico** (lightdm) e **atalho** `Chromium-Raspberry.desktop` na área de trabalho — **o mesmo perfil** que o serviço usa para o autostart; o instalador **não** coloca um segundo `.desktop` em `~/.config/autostart` para o mesmo perfil (evita SingletonLock e dupla abertura).
+
+Após a instalação: `sudo systemctl enable --now raspberry-pi-manager` fica tratado pelo script; aceda a **`http://<IP-do-Pi>:5000`**, inicie sessão com o utilizador Linux configurado (por omissão `administrador` / `raspberry`) e **altere a palavra-passe** em **Sistema → Senha**.
+
+### Configurar o sistema depois de instalado
+
+| Área | O que fazer |
+|------|-------------|
+| **Segurança** | Alterar a palavra-passe Linux do `administrador`; definir **`FLASK_SECRET_KEY`** estável em `/etc/default/raspberry-pi-manager` (o instalador gera uma se faltar; sem ela, reinícios invalidam sessões). Opcional: **`PI_MANAGER_HEALTH_SECRET`** para não expor `/api/health` sem cabeçalho. |
+| **Pasta da app e atualizações** | Garantir que **`APP_INSTALL_DIR`** (e o caminho real da instalação) coincidem; o **webhook** e o **`update_app.sh`** só consideram caminhos permitidos. |
+| **Autostart e browser** | Editar URLs em **`config/autostart.conf`** (UI **Autostart**). O serviço abre o Chromium **uma vez** com lock em ficheiro e deteção de processo; não duplicar autostart do mesmo perfil. Ver secção *Chromium não abre automaticamente* em *Troubleshooting*. |
+| **Rede** | Configurar na UI **Rede** ou com `nmcli`; wrappers registados em `sudoers`. |
+| **Atualizações Git** | Definir **`WEBHOOK_SECRET`** no Pi e no GitHub Actions; workflow `.github/workflows/deploy.yml` dispara o webhook. Atualização manual: `sudo /usr/local/bin/update_app.sh` (logs em `update_app.log` na pasta da app). |
+| **Variáveis avançadas** | Tabela completa na secção **Variáveis de ambiente (`/etc/default/raspberry-pi-manager`)** (login, diagnóstico, proxy, rede temporária, etc.). Sempre **`sudo systemctl restart raspberry-pi-manager`** após editar o ficheiro. |
+
+### Desinstalar ou repor integração
+
+O **`uninstall.sh`** remove serviço, unit, wrappers, `sudoers` e opcionalmente a pasta da aplicação e ficheiros `*pi-manager*` extra em `/home/administrador`. **Não** remove pacotes `apt`, auto-login nem o perfil Chromium por omissão — ver comandos na secção **Desinstalar** abaixo.
+
+### Onde aprofundar
+
+- **Instalação rápida** (comandos mínimos): secção seguinte.
+- **Tabelas de variáveis** e **rede temporária**: mais abaixo no mesmo README.
+- **Problemas com PAM, charset, Chromium, webhook**: secção **Troubleshooting**.
+
+---
+
 ## Instalação Rápida
 
 ### 1. Acesse o Raspberry Pi via SSH
@@ -44,6 +88,10 @@ cd raspberry-pi-manager
 chmod +x install.sh
 sudo ./install.sh
 ```
+
+**Assistente simples:** ao correr com terminal interativo (SSH ou consola), aparece uma **configuração rápida**: prima **ENTER** para usar as opções recomendadas (cópia local para `/home/administrador/raspberry-pi-manager`). Digite **`o`** e ENTER para escolher em poucos passos: clonar do GitHub, pasta de instalação, rede temporária durante o `apt` (avançado) ou limpeza antiga alargada. Para desligar perguntas (CI, scripts): `export PI_MANAGER_INSTALL_INTERACTIVE=0` antes do `sudo`.
+
+**UTF-8 e verificações básicas:** depois de confirmar **conectividade de rede** (`[1.5/12]`), o passo **`[1.6/12]`** verifica se o sistema usa **UTF-8** (evita bugs na interface e nos logs). Se não for o caso, pergunta se deve configurar **antes** do `apt upgrade`. Opcionalmente pergunta se quer **verificações básicas** (espaço em disco e memória). Variáveis: `PI_MANAGER_SKIP_PREFLIGHT=1` (ignorar tudo), `PI_MANAGER_UTF8_AUTO_FIX=1` (corrigir UTF-8 sem perguntar), `PI_MANAGER_STRICT_LOCALE=1` (abortar se recusar UTF-8 e o sistema continuar sem UTF-8), `PI_MANAGER_PREFLIGHT_BASIC=1` (executar verificações extra sem perguntar).
 
 O script irá:
 - ✅ Remover instalações antigas
@@ -78,10 +126,11 @@ No repositório ou em `/home/administrador/raspberry-pi-manager` (após copiar o
 
 ```bash
 chmod +x uninstall.sh
-sudo ./uninstall.sh              # confirmações interativas
-sudo ./uninstall.sh -y           # remove serviço, wrappers, sudoers e a pasta da app
+sudo ./uninstall.sh              # confirmações; procura *pi-manager* extra em /home/administrador
+sudo ./uninstall.sh -y           # remove serviço, wrappers, sudoers, pasta da app e *pi-manager* em home
 sudo ./uninstall.sh -y --purge   # também remove /etc/default/raspberry-pi-manager
 sudo ./uninstall.sh -y --keep-app-dir   # só remove integração (systemd, /usr/local/bin, sudoers)
+sudo ./uninstall.sh --skip-home-wide    # não remove pastas/ficheiros *pi-manager* extra em home
 ```
 
 O desinstalador **não** remove pacotes `apt`, auto-login do Lightdm nem o perfil `~/chromium-profile`. Use `./uninstall.sh --help` para todas as opções.
@@ -180,12 +229,28 @@ O arquivo `.github/workflows/deploy.yml` já está configurado. A cada push para
 | `PI_MANAGER_ASCII_LOGS` | `true`/`1`/`yes`: substitui **emoji** comuns nos logs do painel (`add_event`) e em algumas mensagens de consola por etiquetas **`[OK]`**, **`[WARN]`**, etc. (útil em `journalctl` / terminais sem Unicode). |
 | `SKIP_STARTUP_TASKS` | Reservado para **testes** (`1`/`true`): não executa `startup_tasks()` na importação do `app.py` (evita sleeps e threads). **Não use em produção**. |
 
+**Atualização com IPv4 temporário (Raspberry Pi / NetworkManager):** variáveis de **ambiente** (não vão em `/etc/default` por omissão; use `export` no cron, webhook ou `sudo env …`). Com **`PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1`**, o `install.sh` (antes do `apt upgrade`) e o `update_app.sh` podem **guardar** a ligação IPv4 atual, aplicar um endereço **estático temporário** e **restaurar** no fim ou em caso de erro (via `trap`). Requer **`nmcli`** (pacote `network-manager`). O instalador instala o NM cedo se o swap estiver ativo e o `nmcli` ainda não existir.
+
+| Variável | Descrição |
+|----------|-----------|
+| `PI_MANAGER_NETWORK_SWAP_FOR_UPDATE` | `1` ativa o fluxo guardar → IP temporário → atualizar → restaurar. |
+| `PI_MANAGER_UPDATE_IPV4` | IPv4 temporário (por omissão `10.0.8.94`). |
+| `PI_MANAGER_UPDATE_PREFIX` | Prefixo CIDR (por omissão `24`). |
+| `PI_MANAGER_UPDATE_GW` | Gateway durante a janela de atualização (recomendado na rede de gestão). |
+| `PI_MANAGER_UPDATE_DNS` | DNS durante a janela (por omissão `8.8.8.8 8.8.4.4`). |
+| `PI_MANAGER_NETWORK_SWAP_STATE` | Caminho do ficheiro de estado (por omissão `/run/pi-manager-network-swap.state`). |
+
+**Aviso:** mudar o IP pode **cortar SSH** se a sessão não estiver na mesma subnet; prefira consola, IPMI ou rede de gestão. Defina **`PI_MANAGER_UPDATE_GW`** (e DNS) conforme a VLAN onde o Pi precisa de chegar aos repositórios.
+
 Reinicie o serviço após alterar: `sudo systemctl restart raspberry-pi-manager`.
 
 ### Manutenção (Etapa 2 — auditoria)
 
 - **`src/lib/chromium_favorites.py`**: lógica de favoritos fora do `app.py`.
+- **`scripts/install-wizard.sh`**: perguntas simples no **`install.sh`** (Enter = recomendado; `o` para mais opções); desligar com **`PI_MANAGER_INSTALL_INTERACTIVE=0`**.
+- **`scripts/install-preflight-checks.sh`**: locale **UTF-8** (após rede) e verificações opcionais de disco/memória; ver variáveis `PI_MANAGER_SKIP_PREFLIGHT`, `PI_MANAGER_UTF8_AUTO_FIX`, etc. na secção de instalação rápida.
 - **`scripts/lib-pam-venv.sh`**: funções partilhadas de PAM no venv; usadas por **`install.sh`**, **`scripts/fix-pam-on-pi.sh`** e **`update_app.sh`** (com fallback se o ficheiro ainda não existir numa instalação antiga).
+- **`scripts/lib-network-swap-for-update.sh`**: troca temporária de IPv4 via **NetworkManager** durante `install.sh` / `update_app.sh` quando **`PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1`** (ver tabela acima).
 - **Chromium**: `pgrep` / `pkill` / wrapper **`pi-manager-chromium-clean-locks`** passam a alvo só processos com **`--user-data-dir=`** igual ao perfil gerido (variável de ambiente / predefinição), para não encerrar outras instâncias do Chromium no mesmo sistema.
 
 ### Robustez (Etapa 3 — auditoria)
@@ -335,7 +400,7 @@ Possíveis problemas:
 
 ### Chromium não abre automaticamente
 
-O Chromium com **URLs de `config/autostart.conf`** é aberto **uma vez** pelo serviço `raspberry-pi-manager` (thread em `startup_tasks` → `open_browser_with_urls`). Não use um segundo `.desktop` em `~/.config/autostart/` para o mesmo perfil (`chromium-profile`), senão há risco de SingletonLock / duas aberturas.
+O Chromium com **URLs de `config/autostart.conf`** é aberto **uma vez** pelo serviço `raspberry-pi-manager` (thread em `startup_tasks` → `open_browser_with_urls`). O código usa **lock em ficheiro** (`fcntl`, por omissão em `/tmp/pi-manager-chromium-launch.lock`; override: `PI_MANAGER_CHROMIUM_LAUNCH_LOCK`) para evitar duas threads a lançarem em simultâneo, **deteta** processos com `pgrep -f -- --user-data-dir=…` (o `--` evita o padrão ser confundido com opções) e, antes de um segundo lançamento após singleton, volta a verificar se o browser já está a correr. Não use um segundo `.desktop` em `~/.config/autostart/` para o mesmo perfil (`chromium-profile`), senão há risco de SingletonLock / duas aberturas.
 
 - **Comentários em `autostart.conf`:** só linhas que começam por `#` são ignoradas. Texto de comentário sem `#` no início pode ser tratado como URL inválida ou virar `http://...` estranho.
 - **Singleton / “outro computador”:** o instalador cria `/usr/local/bin/pi-manager-chromium-clean-locks` (no sudoers) para matar o Chromium como root e apagar `Singleton*` mesmo que tenham sido criados por outro UID. Após atualizar o projeto, volte a correr o `install.sh` (ou adicione o wrapper e a linha no `sudoers` manualmente) para não ficar só com `sudo find` genérico (que pode não estar permitido).
@@ -409,7 +474,8 @@ raspberry-pi-manager/
 ├── systemd/
 │   ├── raspberry-pi-manager.service    # Unit file do systemd
 │   └── raspberry-pi-manager.env.example # Exemplo de variáveis
-├── install.sh                 # Script de instalação
+├── install.sh                 # Script de instalação (assistente: scripts/install-wizard.sh)
+├── scripts/                   # install-wizard, lib-pam-venv, lib-network-swap, fix-pam-on-pi
 ├── uninstall.sh               # Desinstala serviço e integração no sistema
 ├── update_app.sh              # Script de atualização automática
 ├── requirements.txt           # Dependências Python

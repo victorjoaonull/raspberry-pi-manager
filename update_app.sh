@@ -59,6 +59,14 @@ mkdir -p "$(dirname "$LOGFILE")" 2>/dev/null || true
 echo "[$(date -Iseconds)] Starting update (APP_ROOT=$APP_ROOT)" >>"$LOGFILE"
 cd "$APP_ROOT"
 
+# --- Rede temporária (opcional): guardar IPv4, usar PI_MANAGER_UPDATE_*, restaurar ao sair ---
+_PI_SWAP_LIB="${APP_ROOT}/scripts/lib-network-swap-for-update.sh"
+if [ -f "$_PI_SWAP_LIB" ]; then
+    # shellcheck source=scripts/lib-network-swap-for-update.sh
+    source "$_PI_SWAP_LIB"
+    pi_manager_network_swap_begin || true
+fi
+
 # --- Dependências do sistema: PAM (login web = senha Linux) ---
 if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
@@ -191,7 +199,14 @@ fi
 
 if [ "${UPDATE_APP_STRICT_PAM:-0}" = "1" ] && [ "$PAM_FINAL_OK" != "1" ]; then
     echo "[$(date -Iseconds)] EXIT 1 (UPDATE_APP_STRICT_PAM=1 e PAM inválido)" >>"$LOGFILE"
+    if type pi_manager_network_swap_end >/dev/null 2>&1; then
+        pi_manager_network_swap_end || true
+    fi
     exit 1
+fi
+
+if type pi_manager_network_swap_end >/dev/null 2>&1; then
+    pi_manager_network_swap_end || true
 fi
 
 exit 0

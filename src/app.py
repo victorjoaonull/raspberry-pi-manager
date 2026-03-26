@@ -16,6 +16,11 @@ from pathlib import Path
 from datetime import datetime
 from collections import deque
 from typing import Optional
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore[assignment, misc]
 import hmac
 import secrets
 import traceback
@@ -121,7 +126,7 @@ def _pam_service_names() -> list[str]:
 
 
 # Versão da Aplicação
-APP_VERSION = "2.5.3"
+APP_VERSION = "2.5.4"
 
 app = Flask(__name__)
 # JSON com caracteres Unicode legíveis nos endpoints (Flask 2.2+)
@@ -267,6 +272,12 @@ CHROMIUM_USER_DATA_DIR = (
     else _DEFAULT_CHROMIUM_USER_DATA_DIR
 )
 
+# Evita duas threads/processos a lançarem Chromium em simultâneo (startup_tasks + reload).
+_CHROMIUM_LAUNCH_LOCK_PATH = os.environ.get(
+    "PI_MANAGER_CHROMIUM_LAUNCH_LOCK",
+    os.path.join(os.getenv("XDG_RUNTIME_DIR") or "/tmp", "pi-manager-chromium-launch.lock"),
+)
+
 
 def _chromium_managed_cmdline_regex() -> str:
     """
@@ -274,6 +285,59 @@ def _chromium_managed_cmdline_regex() -> str:
     (--user-data-dir), evitando afetar outras instâncias.
     """
     return "--user-data-dir=" + re.escape(str(CHROMIUM_USER_DATA_DIR))
+
+
+def _pgrep_managed_args() -> list:
+    """pgrep -f com -- antes do padrão (padrões que começam por -- são senão tratados como opções)."""
+    return ["pgrep", "-f", "--", _chromium_managed_cmdline_regex()]
+
+
+def _pkill_managed_args(sig: str) -> list:
+    """pkill com -- antes do padrão (evita ambiguidade com --user-data-dir=...)."""
+    return ["sudo", "pkill", sig, "-f", "--", _chromium_managed_cmdline_regex()]
+
+
+def _try_acquire_chromium_launch_lock() -> Optional[int]:
+    """
+    Lock não bloqueante. None = já existe outro lançamento em curso.
+    -1 = lock desativado (sem fcntl ou PI_MANAGER_SKIP_CHROMIUM_LAUNCH_LOCK).
+    """
+    if os.environ.get("PI_MANAGER_SKIP_CHROMIUM_LAUNCH_LOCK", "").lower() in ("1", "true", "yes"):
+        return -1
+    if fcntl is None:
+        return -1
+    try:
+        fd = os.open(_CHROMIUM_LAUNCH_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError as e:
+        _log_unexpected(e, "_try_acquire_chromium_launch_lock open")
+        return -1
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except BlockingIOError:
+        pass
+    except OSError as e:
+        _log_unexpected(e, "_try_acquire_chromium_launch_lock flock")
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    return None
+
+
+def _release_chromium_launch_lock(fd: Optional[int]) -> None:
+    if fd is None or fd < 0:
+        return
+    if fcntl is None:
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        os.close(fd)
+    except OSError:
+        pass
 
 
 def _log_unexpected(exc: BaseException, where: str) -> None:
@@ -710,7 +774,7 @@ def cleanup_chromium_locks():
         # 1. Sem wrapper: tenta pkill (só funciona se sudo o permitir). Com wrapper, o pkill é feito lá como root.
         if not use_wrapper:
             subprocess.run(
-                ["sudo", "pkill", "-9", "-f", _chromium_managed_cmdline_regex()],
+                _pkill_managed_args("-9"),
                 stderr=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
             )
@@ -783,7 +847,7 @@ def _chromium_probable_singleton_issue(log_text: str) -> bool:
 def _chromium_is_running() -> bool:
     try:
         r = subprocess.run(
-            ["pgrep", "-f", _chromium_managed_cmdline_regex()],
+            _pgrep_managed_args(),
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -803,7 +867,7 @@ def _chromium_managed_profile_running() -> bool:
     """
     try:
         r = subprocess.run(
-            ["pgrep", "-f", _chromium_managed_cmdline_regex()],
+            _pgrep_managed_args(),
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -840,10 +904,20 @@ def open_browser_with_urls():
     aqui aguardamos mais ~10s para X11 (:0) e sessão gráfica estabilizarem, depois:
     - se o perfil gerenciado já estiver em uso → não relança nem limpa locks (fica estável);
     - senão → limpa locks, sincroniza favoritos, inicia Chromium com as URLs.
+
+    Lock em ficheiro (fcntl) evita duas threads a lançarem em simultâneo (ex.: reload do Flask).
     """
-    time.sleep(10)  # Aguarda X11 / autologin / display :0
+    _lk = _try_acquire_chromium_launch_lock()
+    if _lk is None:
+        add_event(
+            "ℹ️ Outro lançamento do Chromium já está em curso (lock em "
+            f"{_CHROMIUM_LAUNCH_LOCK_PATH}). A ignorar esta chamada."
+        )
+        return
 
     try:
+        time.sleep(10)  # Aguarda X11 / autologin / display :0
+
         urls = load_autostart_urls()
         if not urls:
             add_event("ℹ️ Nenhuma URL configurada no autostart.conf — sem abrir browser")
@@ -921,7 +995,7 @@ def open_browser_with_urls():
         time.sleep(3)
         if _chromium_is_running():
             result = subprocess.run(
-                ["pgrep", "-f", _chromium_managed_cmdline_regex()],
+                _pgrep_managed_args(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
@@ -949,32 +1023,39 @@ def open_browser_with_urls():
                     pass
                 browser_log_fh = None
 
-            cleanup_chromium_locks()
-            time.sleep(1)
-
-            process2, browser_log_fh = _popen_chromium_logged(cmd, "LAUNCH_RETRY_AFTER_SINGLETON_RESET")
-            add_event(f"🔄 Nova tentativa após reset (PID {process2.pid})")
-            time.sleep(3)
-
-            if _chromium_is_running():
-                result = subprocess.run(
-                    ["pgrep", "-f", _chromium_managed_cmdline_regex()],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    text=True,
+            # Entretanto o Chromium pode ter arrancado devagar; não matar nem duplicar.
+            if _chromium_managed_profile_running():
+                add_event(
+                    "ℹ️ Chromium já está em execução com o perfil gerido "
+                    f"({CHROMIUM_USER_DATA_DIR}). A saltar segundo lançamento e reset de singleton."
                 )
-                pids = result.stdout.strip().split("\n") if result.stdout else []
-                add_event(f"✅ Chromium está rodando após reset de singleton ({len(pids)} processos)")
             else:
-                tail2 = _read_log_tail(BROWSER_LOG, 2500)
-                if _chromium_probable_singleton_issue(tail2):
-                    add_event(
-                        "❌ Chromium ainda não abriu após reset de Singleton. "
-                        "Verifique `browser-launch.log` e se há outra instância ativa."
+                cleanup_chromium_locks()
+                time.sleep(1)
+
+                process2, browser_log_fh = _popen_chromium_logged(cmd, "LAUNCH_RETRY_AFTER_SINGLETON_RESET")
+                add_event(f"🔄 Nova tentativa após reset (PID {process2.pid})")
+                time.sleep(3)
+
+                if _chromium_is_running():
+                    result = subprocess.run(
+                        _pgrep_managed_args(),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                        text=True,
                     )
+                    pids = result.stdout.strip().split("\n") if result.stdout else []
+                    add_event(f"✅ Chromium está rodando após reset de singleton ({len(pids)} processos)")
                 else:
-                    trimmed = tail2.replace("\n", " ")[:300]
-                    add_event(f"⚠️ Chromium não abriu após retry. Log (trecho): {trimmed}...")
+                    tail2 = _read_log_tail(BROWSER_LOG, 2500)
+                    if _chromium_probable_singleton_issue(tail2):
+                        add_event(
+                            "❌ Chromium ainda não abriu após reset de Singleton. "
+                            "Verifique `browser-launch.log` e se há outra instância ativa."
+                        )
+                    else:
+                        trimmed = tail2.replace("\n", " ")[:300]
+                        add_event(f"⚠️ Chromium não abriu após retry. Log (trecho): {trimmed}...")
 
         if browser_log_fh:
             try:
@@ -986,6 +1067,8 @@ def open_browser_with_urls():
         _log_unexpected(e, "open_browser_with_urls")
         add_event(f"❌ Erro ao abrir browser: {e}")
         traceback.print_exc()
+    finally:
+        _release_chromium_launch_lock(_lk)
 
 # ========== CONTEXT PROCESSOR - Disponibiliza variáveis em todas as templates ==========
 @app.context_processor
@@ -1961,7 +2044,7 @@ def force_sync_favorites():
             try:
                 # Envia sinal para Chromium recarregar favoritos
                 subprocess.run(
-                    ["sudo", "pkill", "-HUP", "-f", _chromium_managed_cmdline_regex()],
+                    _pkill_managed_args("-HUP"),
                     capture_output=True,
                     stderr=subprocess.DEVNULL,
                 )

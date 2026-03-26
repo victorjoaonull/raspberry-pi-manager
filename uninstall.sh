@@ -24,6 +24,7 @@ YES=0
 PURGE_ENV=0
 KEEP_APP_DIR=0
 KEEP_DESKTOP=0
+SKIP_HOME_WIDE=0
 INSTALL_DIR_CLI=""
 
 usage() {
@@ -35,6 +36,7 @@ usage() {
     echo "  --keep-app-dir         Mantém a pasta da instalação (só remove integração systemd/sudo)."
     echo "  --keep-desktop         Não remove o atalho Chromium-Raspberry.desktop da área de trabalho."
     echo "  --install-dir CAMINHO  Força o diretório a apagar (sobrescreve detecção automática)."
+    echo "  --skip-home-wide       Não procura nem remove *pi-manager* extra em /home/administrador."
     echo "  -h, --help             Esta ajuda."
     echo ""
     echo "Não remove: pacotes apt (nginx, chromium…), auto-login lightdm nem perfil Chromium em ~/chromium-profile."
@@ -46,6 +48,7 @@ while [ $# -gt 0 ]; do
         --purge) PURGE_ENV=1; shift ;;
         --keep-app-dir) KEEP_APP_DIR=1; shift ;;
         --keep-desktop) KEEP_DESKTOP=1; shift ;;
+        --skip-home-wide) SKIP_HOME_WIDE=1; shift ;;
         --install-dir)
             if [ -z "${2:-}" ]; then echo "Falta caminho após --install-dir"; exit 1; fi
             INSTALL_DIR_CLI="$2"
@@ -187,6 +190,45 @@ elif [ -n "$INSTALL_DIR" ] && [ -d "$INSTALL_DIR" ]; then
     fi
 else
     echo -e "${YELLOW}ℹ️  Diretório da instalação não encontrado; nada a apagar.${NC}"
+fi
+
+# --- outros nomes *pi-manager* em /home/administrador (cópias, backups, etc.) ---
+HOME_ADMIN="/home/administrador"
+if [ "$SKIP_HOME_WIDE" -eq 0 ] && [ -d "$HOME_ADMIN" ]; then
+    _HOME_CAND=()
+    while IFS= read -r -d '' _p; do
+        [ -z "$_p" ] && continue
+        if [ -n "${INSTALL_DIR:-}" ]; then
+            case "$_p" in
+                "$INSTALL_DIR"|"$INSTALL_DIR"/*) continue ;;
+            esac
+        fi
+        _HOME_CAND+=("$_p")
+    done < <(find "$HOME_ADMIN" -maxdepth 3 \( -type d -o -type f \) -iname '*pi-manager*' -print0 2>/dev/null || true)
+
+    if [ ${#_HOME_CAND[@]} -gt 0 ]; then
+        echo ""
+        echo -e "${YELLOW}Encontrado nome *pi-manager* em ${HOME_ADMIN} (fora da pasta principal da app):${NC}"
+        for _p in "${_HOME_CAND[@]}"; do
+            echo "  - $_p"
+        done
+        _DO_RM=0
+        if [ "$YES" -eq 1 ]; then
+            _DO_RM=1
+        elif confirm "Remover estes caminhos?"; then
+            _DO_RM=1
+        fi
+        if [ "$_DO_RM" -eq 1 ]; then
+            mapfile -t _HOME_SORTED < <(printf '%s\n' "${_HOME_CAND[@]}" | awk '{ printf "%08d\t%s\n", length($0), $0 }' | sort -r | cut -f2-)
+            for _p in "${_HOME_SORTED[@]}"; do
+                [ -e "$_p" ] || continue
+                rm -rf "$_p" 2>/dev/null || true
+                echo -e "${GREEN}✅ Removido $_p${NC}"
+            done
+        else
+            echo -e "${YELLOW}ℹ️  Caminhos *pi-manager* em ${HOME_ADMIN} não foram removidos.${NC}"
+        fi
+    fi
 fi
 
 # --- atalho na área de trabalho ---

@@ -18,6 +18,8 @@ echo "╔═══════════════════════�
 echo "║      INSTALADOR DO GERENCIADOR RASPBERRY PI          ║"
 echo "╚═══════════════════════════════════════════════════════╝"
 echo -e "${NC}"
+echo "  Dica: na configuração rápida, prima ENTER para usar as opções recomendadas."
+echo ""
 
 # ========== VERIFICAÇÕES INICIAIS ==========
 echo -e "${BLUE}[1/12]${NC} Verificando requisitos..."
@@ -47,6 +49,14 @@ fi
 # ========== CAPTURAR DIRETÓRIO DO REPOSITÓRIO ==========
 # Deve ser feito ANTES de mudar de diretório durante a limpeza
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ========== ASSISTENTE (opcional, leigos: ENTER = recomendado) ==========
+_INSTALL_WIZARD="${REPO_DIR}/scripts/install-wizard.sh"
+if [ -f "$_INSTALL_WIZARD" ]; then
+    # shellcheck source=scripts/install-wizard.sh
+    source "$_INSTALL_WIZARD"
+    pi_manager_install_run_wizard || true
+fi
 
 # ========== LIMPAR INSTALAÇÕES ANTIGAS ==========
 # Por omissão só remove pastas com nomes EXATOS raspberry-pi-manager / raspberry_pi_manager
@@ -149,6 +159,18 @@ GIT_REPO="${GIT_REPO:-https://github.com/victorjoaonull/raspberry-pi-manager.git
 CLONE_FROM_GITHUB="${CLONE_FROM_GITHUB:-false}"
 WEBHOOK_SECRET="${WEBHOOK_SECRET:-}"
 
+# Com PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1, instalar NM cedo para poder trocar IPv4 antes do apt upgrade
+if [ "${PI_MANAGER_NETWORK_SWAP_FOR_UPDATE:-0}" = "1" ]; then
+    if ! command -v nmcli >/dev/null 2>&1; then
+        echo -e "${YELLOW}[--] PI_MANAGER_NETWORK_SWAP: a instalar network-manager antes do apt upgrade...${NC}"
+        apt-get update -qq
+        apt-get install -y -qq network-manager || true
+        systemctl enable NetworkManager 2>/dev/null || true
+        systemctl start NetworkManager 2>/dev/null || true
+        sleep 2
+    fi
+fi
+
 # ========== VERIFICAR CONECTIVIDADE ==========
 echo -e "${BLUE}[1.5/12]${NC} Verificando conectividade de rede..."
 NET_OK=false
@@ -168,6 +190,22 @@ if [ "$NET_OK" = false ]; then
     exit 1
 fi
 
+# Locale UTF-8 e verificações básicas (após rede, para apt install locales) — scripts/install-preflight-checks.sh
+_PREFLIGHT="${REPO_DIR}/scripts/install-preflight-checks.sh"
+if [ -f "$_PREFLIGHT" ]; then
+    # shellcheck source=scripts/install-preflight-checks.sh
+    source "$_PREFLIGHT"
+    pi_manager_run_preflight_checks
+fi
+
+# Troca temporária de IPv4 (opcional) antes do apt upgrade — ver scripts/lib-network-swap-for-update.sh
+_SWAP_LIB="${REPO_DIR}/scripts/lib-network-swap-for-update.sh"
+if [ -f "$_SWAP_LIB" ]; then
+    # shellcheck source=scripts/lib-network-swap-for-update.sh
+    source "$_SWAP_LIB"
+    pi_manager_network_swap_begin || true
+fi
+
 # ========== ATUALIZAR SISTEMA ==========
 echo -e "${BLUE}[2/12]${NC} Atualizando sistema..."
 APT_OK=false
@@ -183,7 +221,14 @@ for i in {1..3}; do
 done
 if [ "$APT_OK" = false ]; then
     echo -e "${RED}❌ Falha ao atualizar sistema após 3 tentativas${NC}"
+    if type pi_manager_network_swap_end >/dev/null 2>&1; then
+        pi_manager_network_swap_end || true
+    fi
     exit 1
+fi
+
+if type pi_manager_network_swap_end >/dev/null 2>&1; then
+    pi_manager_network_swap_end || true
 fi
 
 # ========== INSTALAR DEPENDÊNCIAS ==========
@@ -261,6 +306,21 @@ else
         mkdir -p "$INSTALL_DIR/scripts"
         cp "$REPO_DIR/scripts/lib-pam-venv.sh" "$INSTALL_DIR/scripts/"
         chmod +x "$INSTALL_DIR/scripts/lib-pam-venv.sh"
+    fi
+    if [ -f "$REPO_DIR/scripts/lib-network-swap-for-update.sh" ] && [ "$(realpath "$REPO_DIR")" != "$(realpath "$INSTALL_DIR")" ]; then
+        mkdir -p "$INSTALL_DIR/scripts"
+        cp "$REPO_DIR/scripts/lib-network-swap-for-update.sh" "$INSTALL_DIR/scripts/"
+        chmod +x "$INSTALL_DIR/scripts/lib-network-swap-for-update.sh"
+    fi
+    if [ -f "$REPO_DIR/scripts/install-wizard.sh" ] && [ "$(realpath "$REPO_DIR")" != "$(realpath "$INSTALL_DIR")" ]; then
+        mkdir -p "$INSTALL_DIR/scripts"
+        cp "$REPO_DIR/scripts/install-wizard.sh" "$INSTALL_DIR/scripts/"
+        chmod +x "$INSTALL_DIR/scripts/install-wizard.sh"
+    fi
+    if [ -f "$REPO_DIR/scripts/install-preflight-checks.sh" ] && [ "$(realpath "$REPO_DIR")" != "$(realpath "$INSTALL_DIR")" ]; then
+        mkdir -p "$INSTALL_DIR/scripts"
+        cp "$REPO_DIR/scripts/install-preflight-checks.sh" "$INSTALL_DIR/scripts/"
+        chmod +x "$INSTALL_DIR/scripts/install-preflight-checks.sh"
     fi
 fi
 chown -R administrador:administrador "$INSTALL_DIR"
