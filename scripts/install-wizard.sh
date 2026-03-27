@@ -40,7 +40,7 @@ pi_manager_install_run_wizard() {
         # Troca de IP para o apt: redes que devolvem 403 em deb.debian.org (só com ENTER; não exige menu "o")
         if [ "${PI_MANAGER_NETWORK_SWAP_FOR_UPDATE:-0}" != "1" ]; then
             echo "  Se o apt não conseguir aceder aos espelhos Debian (erro 403 em HTTP), pode usar"
-            echo "  IPv4 temporário 10.0.8.94 e gateway 10.0.0.1 só durante o passo [2/12], depois repõe."
+            echo "  IPv4 temporário 10.0.8.94/16 e gateway 10.0.0.1 só durante o passo [2/12], depois repõe."
             echo "  Requer NetworkManager (nmcli). O SSH pode cortar se o IP não for acessível ao seu PC."
             echo -ne "  Ativar troca de IPv4 temporária para o apt? [s/N]: "
             read -r _swap_ans || true
@@ -49,8 +49,9 @@ pi_manager_install_run_wizard() {
                 s|sim|y|yes)
                     export PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1
                     export PI_MANAGER_UPDATE_IPV4="${PI_MANAGER_UPDATE_IPV4:-10.0.8.94}"
+                    export PI_MANAGER_UPDATE_PREFIX="${PI_MANAGER_UPDATE_PREFIX:-16}"
                     export PI_MANAGER_UPDATE_GW="${PI_MANAGER_UPDATE_GW:-10.0.0.1}"
-                    echo -e "  \033[0;32m✓\033[0m Troca ativada: 10.0.8.94/24 via 10.0.0.1 (sobrepor com PI_MANAGER_UPDATE_* no ambiente)."
+                    echo -e "  \033[0;32m✓\033[0m Troca ativada: 10.0.8.94/16 via 10.0.0.1 (sobrepor com PI_MANAGER_UPDATE_* no ambiente)."
                     ;;
             esac
         fi
@@ -106,6 +107,7 @@ pi_manager_install_run_wizard() {
             s|sim|y|yes)
                 export PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1
                 export PI_MANAGER_UPDATE_IPV4="${PI_MANAGER_UPDATE_IPV4:-10.0.8.94}"
+                export PI_MANAGER_UPDATE_PREFIX="${PI_MANAGER_UPDATE_PREFIX:-16}"
                 export PI_MANAGER_UPDATE_GW="${PI_MANAGER_UPDATE_GW:-10.0.0.1}"
                 echo -ne "  Outro gateway que não 10.0.0.1? [Enter = manter 10.0.0.1]: "
                 read -r _gw || true

@@ -3,7 +3,7 @@
 # aplicar IP manual, restaurar no fim ou em EXIT/INT/TERM.
 #
 # Ativar: PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1
-# Opcional: PI_MANAGER_UPDATE_IPV4 (omissão 10.0.8.94), PI_MANAGER_UPDATE_PREFIX,
+# Opcional: PI_MANAGER_UPDATE_IPV4 (omissão 10.0.8.94), PI_MANAGER_UPDATE_PREFIX (omissão 16),
 #           PI_MANAGER_UPDATE_GW (omissão 10.0.0.1), PI_MANAGER_UPDATE_DNS (omissão 8.8.8.8 8.8.4.4)
 #
 # Preferência: nmcli (NetworkManager). Se nmcli/NM não estiverem disponíveis, usa-se
@@ -71,7 +71,7 @@ _pi_manager_apply_temp_ipv4() {
     local dev="$2"
     local ip prefix addr gw dns
     ip="${PI_MANAGER_UPDATE_IPV4:-10.0.8.94}"
-    prefix="${PI_MANAGER_UPDATE_PREFIX:-24}"
+    prefix="${PI_MANAGER_UPDATE_PREFIX:-16}"
     addr="${ip}/${prefix}"
     gw="${PI_MANAGER_UPDATE_GW:-10.0.0.1}"
     dns="${PI_MANAGER_UPDATE_DNS:-8.8.8.8 8.8.4.4}"
@@ -103,13 +103,33 @@ _pi_manager_find_default_iface() {
     return 1
 }
 
+# Rota predefinida IPv4: tenta normal e com onlink (gw fora da sub-rede do IP, ex. /32 ou /24 com gateway noutro prefixo)
+_pi_manager_ip_route_add_default() {
+    local iface="$1" gw="$2"
+    [ -n "$iface" ] && [ -n "$gw" ] || return 1
+    ip -4 route del default dev "$iface" 2>/dev/null || true
+    if ip -4 route replace default via "$gw" dev "$iface" 2>/dev/null; then
+        return 0
+    fi
+    if ip -4 route add default via "$gw" dev "$iface" 2>/dev/null; then
+        return 0
+    fi
+    if ip -4 route replace default via "$gw" dev "$iface" onlink 2>/dev/null; then
+        return 0
+    fi
+    if ip -4 route add default via "$gw" dev "$iface" onlink 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
 _pi_manager_swap_begin_ip_cmd() {
     local iface temp prefix gw dns i line old_gw resolv_bak
     command -v ip >/dev/null 2>&1 || return 1
     iface="$(_pi_manager_find_default_iface)" || return 1
 
     temp="${PI_MANAGER_UPDATE_IPV4:-10.0.8.94}"
-    prefix="${PI_MANAGER_UPDATE_PREFIX:-24}"
+    prefix="${PI_MANAGER_UPDATE_PREFIX:-16}"
     gw="${PI_MANAGER_UPDATE_GW:-10.0.0.1}"
     dns="${PI_MANAGER_UPDATE_DNS:-8.8.8.8 8.8.4.4}"
     mkdir -p "$(dirname "$PI_MANAGER_NETWORK_SWAP_STATE")" 2>/dev/null || true
@@ -153,8 +173,8 @@ _pi_manager_swap_begin_ip_cmd() {
         return 1
     fi
 
-    if ! ip route replace default via "$gw" dev "$iface" 2>/dev/null && ! ip route add default via "$gw" dev "$iface" 2>/dev/null; then
-        echo "pi-manager: falha ao definir rota padrão." >&2
+    if ! _pi_manager_ip_route_add_default "$iface" "$gw"; then
+        echo "pi-manager: falha ao definir rota padrão (tentou via/onlink em $iface -> $gw)." >&2
         _pi_manager_restore_ip_cmd || true
         rm -f "$PI_MANAGER_NETWORK_SWAP_STATE" 2>/dev/null || true
         return 1
@@ -193,8 +213,7 @@ _pi_manager_restore_ip_cmd() {
     done <"$PI_MANAGER_NETWORK_SWAP_STATE"
 
     if [ -n "$old_gw" ]; then
-        ip route replace default via "$old_gw" dev "$iface" 2>/dev/null || \
-        ip route add default via "$old_gw" dev "$iface" 2>/dev/null || true
+        _pi_manager_ip_route_add_default "$iface" "$old_gw" || true
     fi
     if [ -f "$resolv_bak" ]; then
         cp -a "$resolv_bak" /etc/resolv.conf 2>/dev/null || true
@@ -233,7 +252,7 @@ _pi_manager_swap_begin_nm() {
         return 1
     fi
 
-    echo "pi-manager: IPv4 temporário aplicado (${PI_MANAGER_UPDATE_IPV4:-10.0.8.94}); estado anterior guardado."
+    echo "pi-manager: IPv4 temporário aplicado (${PI_MANAGER_UPDATE_IPV4:-10.0.8.94}/${PI_MANAGER_UPDATE_PREFIX:-16}); estado anterior guardado."
     return 0
 }
 

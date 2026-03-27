@@ -29,10 +29,10 @@ Este repositório instala um **painel web** (Flask) que corre como **serviço sy
 ### Fluxo geral do instalador (`install.sh`)
 
 1. **Ambiente**: confirma que o hardware é Raspberry Pi, que corre como **root** (`sudo`) e cria o utilizador **`administrador`** com palavra-passe inicial `raspberry` se ainda não existir (deve alterar logo após o primeiro acesso).
-2. **Assistente opcional** (`scripts/install-wizard.sh`): em terminal interativo, **ENTER** aceita a configuração recomendada (cópia local do repositório para `/home/administrador/raspberry-pi-manager`); em seguida pergunta se quer **troca de IPv4 temporária para o `apt`** (útil quando `deb.debian.org` devolve **403** na rede atual). Se responder **s**, o IPv4 temporário (**10.0.8.94** / **10.0.0.1** por omissão) é aplicado **de seguida**, antes da limpeza e dos passos **[1.5]**–**[2]**. **`o`** abre opções completas (GitHub, pasta, rede, limpeza alargada). Em automação: `PI_MANAGER_INSTALL_INTERACTIVE=0`. Variáveis `PI_*` antes do `sudo`: **`sudo -E ./install.sh`**.
+2. **Assistente opcional** (`scripts/install-wizard.sh`): em terminal interativo, **ENTER** aceita a configuração recomendada (cópia local do repositório para `/home/administrador/raspberry-pi-manager`); em seguida pergunta se quer **troca de IPv4 temporária para o `apt`** (útil quando `deb.debian.org` devolve **403** na rede atual). Se responder **s**, o IPv4 temporário (**10.0.8.94/16**, gateway **10.0.0.1** por omissão) é aplicado **de seguida**, antes da limpeza e dos passos **[1.5]**–**[2]**. **`o`** abre opções completas (GitHub, pasta, rede, limpeza alargada). Em automação: `PI_MANAGER_INSTALL_INTERACTIVE=0`. Variáveis `PI_*` antes do `sudo`: **`sudo -E ./install.sh`**.
 3. **Limpeza de instalações antigas**: remove apenas pastas com nomes previsíveis (`raspberry-pi-manager` / `raspberry_pi_manager`) em caminhos seguros; a varredura larga `*pi-manager*` exige `PI_MANAGER_LEGACY_WIDE_CLEANUP=1`.
 4. **Variáveis** como `INSTALL_DIR`, `PI_MANAGER_CHROMIUM_USER_DATA_DIR`, `CLONE_FROM_GITHUB` podem ser definidas **antes** de correr o script (ou via assistente).
-5. **Rede opcional para atualizações**: se `PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1`, o script guarda o IPv4 atual, aplica **10.0.8.94/24** com gateway **10.0.0.1** **logo após o assistente** (ou no início do `install.sh` se a variável já estiver definida), mantém durante o `apt`, e restaura no fim — requer `nmcli` / NetworkManager (ver tabela mais abaixo).
+5. **Rede opcional para atualizações**: se `PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1`, o script guarda o IPv4 atual, aplica **10.0.8.94/16** com gateway **10.0.0.1** **logo após o assistente** (ou no início do `install.sh` se a variável já estiver definida), mantém durante o `apt`, e restaura no fim — requer `nmcli` / NetworkManager (ver tabela mais abaixo).
 6. **Conectividade** (`[1.5/12]`): ping para confirmar acesso à Internet antes do `apt`.
 7. **Pré-voo** (`[1.6/12]`, `scripts/install-preflight-checks.sh`): após haver rede, verifica **UTF-8** (recomendado para a UI e logs); opcionalmente **espaço em disco** e **memória**. Variáveis: `PI_MANAGER_SKIP_PREFLIGHT`, `PI_MANAGER_UTF8_AUTO_FIX`, `PI_MANAGER_STRICT_LOCALE`, `PI_MANAGER_PREFLIGHT_BASIC`.
 8. **`apt upgrade`** e instalação de dependências (entre elas **nginx**, **git**, **chromium**, **network-manager**, **python3-pam**, etc.).
@@ -235,12 +235,12 @@ O arquivo `.github/workflows/deploy.yml` já está configurado. A cada push para
 |----------|-----------|
 | `PI_MANAGER_NETWORK_SWAP_FOR_UPDATE` | `1` ativa o fluxo guardar → IP temporário → atualizar → restaurar. |
 | `PI_MANAGER_UPDATE_IPV4` | IPv4 temporário (por omissão **`10.0.8.94`**). |
-| `PI_MANAGER_UPDATE_PREFIX` | Prefixo CIDR (por omissão `24`). |
+| `PI_MANAGER_UPDATE_PREFIX` | Prefixo CIDR (por omissão **`16`**). |
 | `PI_MANAGER_UPDATE_GW` | Gateway durante a janela de atualização (por omissão **`10.0.0.1`**). |
 | `PI_MANAGER_UPDATE_DNS` | DNS durante a janela (por omissão `8.8.8.8 8.8.4.4`). |
 | `PI_MANAGER_NETWORK_SWAP_STATE` | Caminho do ficheiro de estado (por omissão `/run/pi-manager-network-swap.state`). |
 
-**Aviso:** mudar o IP pode **cortar SSH** se a sessão não estiver na mesma subnet; prefira consola, IPMI ou rede de gestão. Por omissão o projeto usa **10.0.8.94/24** e gateway **10.0.0.1**; ajuste **`PI_MANAGER_UPDATE_*`** se a sua rede de gestão for diferente.
+**Aviso:** mudar o IP pode **cortar SSH** se a sessão não estiver na mesma subnet; prefira consola, IPMI ou rede de gestão. Por omissão o projeto usa **10.0.8.94/16** e gateway **10.0.0.1**; ajuste **`PI_MANAGER_UPDATE_*`** se a sua rede de gestão for diferente.
 
 Reinicie o serviço após alterar: `sudo systemctl restart raspberry-pi-manager`.
 
@@ -328,9 +328,9 @@ Visualize status em tempo real:
 
 Isto **não é um bug do instalador**: a rede onde o Pi está (firewall, proxy, política regional ou bloqueio do espelho) recusa HTTP ao espelho Debian. O **ping** a 8.8.8.8 pode funcionar e mesmo assim o `apt update` falhar com **403**.
 
-**Solução prevista no projeto:** no assistente, após escolher a configuração recomendada (ENTER), responda **s** à pergunta **«Ativar troca de IPv4 temporária para o apt?»** — o script aplica **10.0.8.94** com gateway **10.0.0.1** (predefinições do projeto) **de imediato** (via NetworkManager se existir; caso contrário via **`ip`**), sem precisar de `apt install network-manager` antes; depois corre **[1.5]**, **[1.6]** e o passo **[2/12]**, e **repõe** a configuração anterior antes do **[3/12]** (onde o `network-manager` pode ser instalado). Se a troca falhar por falta de `iproute2` ou rede, instale dependências ou ajuste **`PI_MANAGER_UPDATE_*`** conforme a sua rede.
+**Solução prevista no projeto:** no assistente, após escolher a configuração recomendada (ENTER), responda **s** à pergunta **«Ativar troca de IPv4 temporária para o apt?»** — o script aplica **10.0.8.94/16** com gateway **10.0.0.1** (predefinições do projeto) **de imediato** (via NetworkManager se existir; caso contrário via **`ip`**), sem precisar de `apt install network-manager` antes; depois corre **[1.5]**, **[1.6]** e o passo **[2/12]**, e **repõe** a configuração anterior antes do **[3/12]** (onde o `network-manager` pode ser instalado). Se a troca falhar por falta de `iproute2` ou rede, instale dependências ou ajuste **`PI_MANAGER_UPDATE_*`** conforme a sua rede.
 
-**Variáveis por linha de comandos** (útil em scripts): `PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1` basta — gateway e IPv4 temporário têm omissão **10.0.0.1** e **10.0.8.94**. Corra **`sudo -E ./install.sh`** — o **`sudo` sem `-E` apaga as variáveis** `PI_*` do seu utilizador.
+**Variáveis por linha de comandos** (útil em scripts): `PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1` basta — omissões **10.0.8.94/16** e gateway **10.0.0.1**; ajuste **`PI_MANAGER_UPDATE_PREFIX`** se necessário. Corra **`sudo -E ./install.sh`** — o **`sudo` sem `-E` apaga as variáveis** `PI_*` do seu utilizador.
 
 **Outras opções:** usar espelhos em `https://` (editar `/etc/apt/sources.list` com cuidado), ou rede/VPN conforme a política da sua organização.
 

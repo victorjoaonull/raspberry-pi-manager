@@ -65,7 +65,7 @@ _SWAP_LIB="${REPO_DIR}/scripts/lib-network-swap-for-update.sh"
 if [ "${PI_MANAGER_NETWORK_SWAP_FOR_UPDATE:-0}" = "1" ] && [ -f "$_SWAP_LIB" ]; then
     # shellcheck source=scripts/lib-network-swap-for-update.sh
     source "$_SWAP_LIB"
-    echo -e "${BLUE}[swap]${NC} A aplicar IPv4 temporário (${PI_MANAGER_UPDATE_IPV4:-10.0.8.94}, gw ${PI_MANAGER_UPDATE_GW:-10.0.0.1}) agora…"
+    echo -e "${BLUE}[swap]${NC} A aplicar IPv4 temporário (${PI_MANAGER_UPDATE_IPV4:-10.0.8.94}/${PI_MANAGER_UPDATE_PREFIX:-16}, gw ${PI_MANAGER_UPDATE_GW:-10.0.0.1}) agora…"
     pi_manager_network_swap_begin || true
 fi
 
