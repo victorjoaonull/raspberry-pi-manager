@@ -51,7 +51,7 @@ Após a instalação: `sudo systemctl enable --now raspberry-pi-manager` fica tr
 | **Pasta da app e atualizações** | Garantir que **`APP_INSTALL_DIR`** (e o caminho real da instalação) coincidem; o **webhook** e o **`update_app.sh`** só consideram caminhos permitidos. |
 | **Autostart e browser** | Editar URLs em **`config/autostart.conf`** (UI **Autostart**). O serviço abre o Chromium **uma vez** com lock em ficheiro e deteção de processo; não duplicar autostart do mesmo perfil. Ver secção *Chromium não abre automaticamente* em *Troubleshooting*. |
 | **Rede** | Configurar na UI **Rede** ou com `nmcli`; wrappers registados em `sudoers`. |
-| **Atualizações Git** | Definir **`WEBHOOK_SECRET`** no Pi e no GitHub Actions; workflow `.github/workflows/deploy.yml` dispara o webhook. Atualização manual: `sudo /usr/local/bin/update_app.sh` (logs em `update_app.log` na pasta da app). |
+| **Atualizações Git** | Pode usar **webhook** (GitHub Actions) ou **verificação periódica local** (`pi-manager-auto-update.timer`). Atualização manual: `sudo /usr/local/bin/update_app.sh` (logs em `update_app.log` na pasta da app). |
 | **Variáveis avançadas** | Tabela completa na secção **Variáveis de ambiente (`/etc/default/raspberry-pi-manager`)** (login, diagnóstico, proxy, rede temporária, etc.). Sempre **`sudo systemctl restart raspberry-pi-manager`** após editar o ficheiro. |
 
 ### Desinstalar ou repor integração
@@ -202,6 +202,24 @@ O arquivo `.github/workflows/deploy.yml` já está configurado. A cada push para
 
 **Instalação em pasta personalizada:** defina `INSTALL_DIR` ao correr o `install.sh` e confirme que `/etc/default/raspberry-pi-manager` contém `APP_INSTALL_DIR` com o mesmo caminho (o instalador acrescenta se faltar). Isso alinha `update_app.sh`, o webhook (só executa `update_app.sh` dentro de diretórios permitidos) e as atualizações.
 
+### 4. Verificação Periódica no Raspberry (pull automático)
+
+Se preferir que **cada Raspberry** verifique periodicamente o GitHub (sem depender de webhook externo), o instalador cria:
+
+- `pi-manager-auto-update.service` (oneshot)
+- `pi-manager-auto-update.timer` (por omissão: a cada 5 min)
+- `/usr/local/bin/pi-manager-auto-update-check` (fetch + comparação de commit + `update_app.sh`)
+
+Comandos úteis:
+
+```bash
+sudo systemctl status pi-manager-auto-update.timer
+sudo systemctl list-timers | grep pi-manager-auto-update
+sudo journalctl -u pi-manager-auto-update.service -n 100 --no-pager
+```
+
+Logs do verificador ficam em `APP_INSTALL_DIR/update_auto.log`.
+
 ---
 
 ## Variáveis de ambiente (`/etc/default/raspberry-pi-manager`)
@@ -210,6 +228,9 @@ O arquivo `.github/workflows/deploy.yml` já está configurado. A cada push para
 |----------|-----------|
 | `WEBHOOK_SECRET` | Secret HMAC do GitHub (obrigatório para auto-update via webhook). |
 | `APP_INSTALL_DIR` | Diretório da aplicação (usado por `update_app.sh` em `/usr/local/bin` e na lista segura do webhook). |
+| `PI_MANAGER_AUTO_UPDATE_ENABLED` | `1` ativa o timer local de auto-update (pull periódico); `0` desativa. |
+| `PI_MANAGER_AUTO_UPDATE_BRANCH` | Branch monitorizada pelo verificador (por omissão `main`). |
+| `PI_MANAGER_AUTO_UPDATE_REMOTE` | Remote git monitorizado (por omissão `origin`). |
 | `PI_MANAGER_INSTALL_DIR` | Opcional; mesmo papel que `APP_INSTALL_DIR` se precisar de um segundo nome. |
 | `PI_MANAGER_CHROMIUM_USER_DATA_DIR` | Pasta do perfil Chromium (`--user-data-dir`). Por omissão: `/home/administrador/chromium-profile`. Use outro caminho (ex. `.../chromium-profile-padrao`) após clonar imagem ou mudar hostname para evitar bloqueio SingletonLock. |
 | `PI_MANAGER_LOG_DIR` | Onde gravar logs de ficheiro da app (ex.: `browser-launch.log`). Por omissão: `<pasta da app>/logs`. |

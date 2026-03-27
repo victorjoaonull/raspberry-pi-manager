@@ -340,6 +340,11 @@ else
         cp "$REPO_DIR/scripts/install-preflight-checks.sh" "$INSTALL_DIR/scripts/"
         chmod +x "$INSTALL_DIR/scripts/install-preflight-checks.sh"
     fi
+    if [ -f "$REPO_DIR/scripts/auto-update-check.sh" ] && [ "$(realpath "$REPO_DIR")" != "$(realpath "$INSTALL_DIR")" ]; then
+        mkdir -p "$INSTALL_DIR/scripts"
+        cp "$REPO_DIR/scripts/auto-update-check.sh" "$INSTALL_DIR/scripts/"
+        chmod +x "$INSTALL_DIR/scripts/auto-update-check.sh"
+    fi
 fi
 chown -R administrador:administrador "$INSTALL_DIR"
 
@@ -447,6 +452,20 @@ elif [ -f "$REPO_DIR/update_app.sh" ]; then
     echo "✅ update_app.sh instalado em /usr/local/bin/"
 else
     echo "⚠️  update_app.sh não encontrado; pulando."
+fi
+
+if [ -f "$INSTALL_DIR/scripts/auto-update-check.sh" ]; then
+    cp "$INSTALL_DIR/scripts/auto-update-check.sh" /usr/local/bin/pi-manager-auto-update-check
+    chmod +x /usr/local/bin/pi-manager-auto-update-check
+    chown root:root /usr/local/bin/pi-manager-auto-update-check
+    echo "✅ auto-update-check instalado em /usr/local/bin/pi-manager-auto-update-check"
+elif [ -f "$REPO_DIR/scripts/auto-update-check.sh" ]; then
+    cp "$REPO_DIR/scripts/auto-update-check.sh" /usr/local/bin/pi-manager-auto-update-check
+    chmod +x /usr/local/bin/pi-manager-auto-update-check
+    chown root:root /usr/local/bin/pi-manager-auto-update-check
+    echo "✅ auto-update-check instalado em /usr/local/bin/pi-manager-auto-update-check"
+else
+    echo "⚠️  scripts/auto-update-check.sh não encontrado; pulando auto-update periódico."
 fi
 
 # ========== CONFIGURAR PERMISSÕES SUDO ==========
@@ -684,6 +703,11 @@ SERVICE_NAME=raspberry-pi-manager
 # Endpoints /api/diagnostic/* e /api/favorites/diagnostic (1/true/yes para ativar)
 #PI_MANAGER_DIAGNOSTICS=false
 
+# Auto-update periódico (pull no GitHub por timer local)
+PI_MANAGER_AUTO_UPDATE_ENABLED=1
+#PI_MANAGER_AUTO_UPDATE_BRANCH=main
+#PI_MANAGER_AUTO_UPDATE_REMOTE=origin
+
 # Outras variáveis opcionais
 #DEBUG=false
 #FLASK_HOST=0.0.0.0
@@ -801,6 +825,47 @@ fi
 echo -e "${BLUE}🔍 Validando arquivo de serviço...${NC}"
 if ! systemd-analyze verify /etc/systemd/system/${SERVICE_NAME}.service 2>/dev/null; then
     echo -e "${YELLOW}⚠️  Aviso: systemd-analyze não disponível, mas continuando...${NC}"
+fi
+
+# Serviço/timer de auto-update pull-based (cada Raspberry verifica o GitHub periodicamente)
+echo -e "${BLUE}[11.6/12]${NC} Configurando auto-update periódico (systemd timer)..."
+cat > /etc/systemd/system/pi-manager-auto-update.service << EOF
+[Unit]
+Description=Raspberry Pi Manager - verificação periódica de atualizações (Git pull)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/${SERVICE_NAME}
+ExecStart=/usr/local/bin/pi-manager-auto-update-check
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+EOF
+
+cat > /etc/systemd/system/pi-manager-auto-update.timer << 'EOF'
+[Unit]
+Description=Raspberry Pi Manager - timer de auto-update
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=45s
+Persistent=true
+Unit=pi-manager-auto-update.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+if [ "${PI_MANAGER_AUTO_UPDATE_ENABLED:-1}" = "1" ] && [ -x /usr/local/bin/pi-manager-auto-update-check ]; then
+    systemctl enable --now pi-manager-auto-update.timer >/dev/null 2>&1 || true
+    echo -e "${GREEN}✅ Timer de auto-update ativo (pi-manager-auto-update.timer).${NC}"
+else
+    systemctl disable --now pi-manager-auto-update.timer >/dev/null 2>&1 || true
+    echo -e "${YELLOW}⚠️  Auto-update periódico desativado (PI_MANAGER_AUTO_UPDATE_ENABLED != 1 ou script ausente).${NC}"
 fi
 
 # ========== CONFIGURAR AUTO-LOGIN ==========
