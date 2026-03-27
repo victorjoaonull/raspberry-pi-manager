@@ -3,8 +3,8 @@
 # aplicar IP manual, restaurar no fim ou em EXIT/INT/TERM.
 #
 # Ativar: PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1
-# Opcional: PI_MANAGER_UPDATE_IPV4, PI_MANAGER_UPDATE_PREFIX, PI_MANAGER_UPDATE_GW,
-#           PI_MANAGER_UPDATE_DNS (por omissão 8.8.8.8 8.8.4.4)
+# Opcional: PI_MANAGER_UPDATE_IPV4 (omissão 10.0.8.94), PI_MANAGER_UPDATE_PREFIX,
+#           PI_MANAGER_UPDATE_GW (omissão 10.0.0.1), PI_MANAGER_UPDATE_DNS (omissão 8.8.8.8 8.8.4.4)
 #
 # Requisitos: nmcli (pacote network-manager), típico no Raspberry Pi OS com NM.
 # shellcheck shell=bash
@@ -72,7 +72,7 @@ _pi_manager_apply_temp_ipv4() {
     ip="${PI_MANAGER_UPDATE_IPV4:-10.0.8.94}"
     prefix="${PI_MANAGER_UPDATE_PREFIX:-24}"
     addr="${ip}/${prefix}"
-    gw="${PI_MANAGER_UPDATE_GW:-}"
+    gw="${PI_MANAGER_UPDATE_GW:-10.0.0.1}"
     dns="${PI_MANAGER_UPDATE_DNS:-8.8.8.8 8.8.4.4}"
     nmcli connection modify "$uuid" ipv4.method manual ipv4.addresses "$addr" ipv4.dns "$dns" || return 1
     if [ -n "$gw" ]; then
