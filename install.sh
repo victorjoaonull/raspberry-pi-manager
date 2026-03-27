@@ -59,6 +59,23 @@ if [ -f "$_INSTALL_WIZARD" ]; then
     pi_manager_install_run_wizard || true
 fi
 
+# Troca IPv4 imediata após "sim" no assistente (ou PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1 no ambiente)
+_SWAP_LIB="${REPO_DIR}/scripts/lib-network-swap-for-update.sh"
+if [ "${PI_MANAGER_NETWORK_SWAP_FOR_UPDATE:-0}" = "1" ] && [ -f "$_SWAP_LIB" ]; then
+    if ! command -v nmcli >/dev/null 2>&1; then
+        echo -e "${YELLOW}[--] PI_MANAGER_NETWORK_SWAP: a instalar network-manager…${NC}"
+        apt-get update -qq || true
+        apt-get install -y -qq network-manager || true
+        systemctl enable NetworkManager 2>/dev/null || true
+        systemctl start NetworkManager 2>/dev/null || true
+        sleep 2
+    fi
+    # shellcheck source=scripts/lib-network-swap-for-update.sh
+    source "$_SWAP_LIB"
+    echo -e "${BLUE}[swap]${NC} A aplicar IPv4 temporário (${PI_MANAGER_UPDATE_IPV4:-10.0.8.94}, gw ${PI_MANAGER_UPDATE_GW:-10.0.0.1}) agora…"
+    pi_manager_network_swap_begin || true
+fi
+
 # ========== LIMPAR INSTALAÇÕES ANTIGAS ==========
 # Por omissão só remove pastas com nomes EXATOS raspberry-pi-manager / raspberry_pi_manager
 # (evita apagar diretórios tipo "meu-pi-manager-backup"). Para o comportamento antigo
@@ -160,18 +177,6 @@ GIT_REPO="${GIT_REPO:-https://github.com/victorjoaonull/raspberry-pi-manager.git
 CLONE_FROM_GITHUB="${CLONE_FROM_GITHUB:-false}"
 WEBHOOK_SECRET="${WEBHOOK_SECRET:-}"
 
-# Com PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1, instalar NM cedo para poder trocar IPv4 antes do apt upgrade
-if [ "${PI_MANAGER_NETWORK_SWAP_FOR_UPDATE:-0}" = "1" ]; then
-    if ! command -v nmcli >/dev/null 2>&1; then
-        echo -e "${YELLOW}[--] PI_MANAGER_NETWORK_SWAP: a instalar network-manager antes do apt upgrade...${NC}"
-        apt-get update -qq
-        apt-get install -y -qq network-manager || true
-        systemctl enable NetworkManager 2>/dev/null || true
-        systemctl start NetworkManager 2>/dev/null || true
-        sleep 2
-    fi
-fi
-
 # ========== VERIFICAR CONECTIVIDADE ==========
 echo -e "${BLUE}[1.5/12]${NC} Verificando conectividade de rede..."
 NET_OK=false
@@ -199,13 +204,7 @@ if [ -f "$_PREFLIGHT" ]; then
     pi_manager_run_preflight_checks
 fi
 
-# Troca temporária de IPv4 (opcional) antes do apt upgrade — ver scripts/lib-network-swap-for-update.sh
-_SWAP_LIB="${REPO_DIR}/scripts/lib-network-swap-for-update.sh"
-if [ -f "$_SWAP_LIB" ]; then
-    # shellcheck source=scripts/lib-network-swap-for-update.sh
-    source "$_SWAP_LIB"
-    pi_manager_network_swap_begin || true
-fi
+# (Troca de IPv4 já aplicada após o assistente, se PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1.)
 
 # ========== ATUALIZAR SISTEMA ==========
 echo -e "${BLUE}[2/12]${NC} Atualizando sistema..."
