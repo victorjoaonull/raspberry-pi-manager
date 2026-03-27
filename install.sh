@@ -198,12 +198,19 @@ if [ -f "$_PREFLIGHT" ]; then
 fi
 
 # (Troca de IPv4 já aplicada após o assistente, se PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1.)
+# O swap mantém-se ativo durante [2] e [3] para todo o tráfego a deb.debian.org; só depois se repõe a rede.
+
+# Opções apt: com swap ativo, força IPv4 (evita falhas de resolução/DNS via IPv6) e mais uma tentativa de rede.
+PI_MANAGER_APT_OPTS=()
+if [ "${PI_MANAGER_NETWORK_SWAP_FOR_UPDATE:-0}" = "1" ]; then
+    PI_MANAGER_APT_OPTS+=(-o "Acquire::ForceIPv4=true" -o "Acquire::Retries=3")
+fi
 
 # ========== ATUALIZAR SISTEMA ==========
 echo -e "${BLUE}[2/12]${NC} Atualizando sistema..."
 APT_OK=false
 for i in {1..3}; do
-    if apt update && apt upgrade -y; then
+    if apt "${PI_MANAGER_APT_OPTS[@]}" update && apt "${PI_MANAGER_APT_OPTS[@]}" upgrade -y; then
         APT_OK=true
         break
     fi
@@ -220,13 +227,31 @@ if [ "$APT_OK" = false ]; then
     exit 1
 fi
 
+# ========== INSTALAR DEPENDÊNCIAS ==========
+echo -e "${BLUE}[3/12]${NC} Instalando dependências..."
+DEPS_OK=false
+for i in {1..3}; do
+    if apt "${PI_MANAGER_APT_OPTS[@]}" install -y python3-pip python3-venv nginx git chromium python3-full xdotool network-manager python3-pam --no-install-recommends; then
+        DEPS_OK=true
+        break
+    fi
+    if [ $i -lt 3 ]; then
+        echo -e "${YELLOW}⚠️  apt install dependências falhou. Tentativa $((i+1))/3...${NC}"
+        sleep 10
+    fi
+done
+if [ "$DEPS_OK" = false ]; then
+    echo -e "${RED}❌ Falha ao instalar dependências após 3 tentativas${NC}"
+    if type pi_manager_network_swap_end >/dev/null 2>&1; then
+        pi_manager_network_swap_end || true
+    fi
+    exit 1
+fi
+
+# Repor rede anterior / NetworkManager após todo o apt que precisa dos espelhos Debian
 if type pi_manager_network_swap_end >/dev/null 2>&1; then
     pi_manager_network_swap_end || true
 fi
-
-# ========== INSTALAR DEPENDÊNCIAS ==========
-echo -e "${BLUE}[3/12]${NC} Instalando dependências..."
-apt install -y python3-pip python3-venv nginx git chromium python3-full xdotool network-manager python3-pam --no-install-recommends
 
 # ========== CRIAR DIRETÓRIO DE INSTALAÇÃO ==========
 echo -e "${BLUE}[4/12]${NC} Criando diretório de instalação..."

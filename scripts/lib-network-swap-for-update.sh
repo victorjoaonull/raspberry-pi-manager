@@ -156,8 +156,13 @@ _pi_manager_swap_begin_ip_cmd() {
     fi
 
     resolv_bak="${PI_MANAGER_NETWORK_SWAP_STATE}.resolv.bak"
-    if [ -f /etc/resolv.conf ]; then
+    if [ -e /etc/resolv.conf ]; then
         cp -a /etc/resolv.conf "$resolv_bak" 2>/dev/null || true
+    fi
+    # systemd-resolved em Debian: stub em /etc/resolv.conf aponta para 127.0.0.53; substituir por ficheiro
+    # com DNS públicos evita "Falha temporária resolvendo" durante o apt.
+    if [ -L /etc/resolv.conf ]; then
+        rm -f /etc/resolv.conf
     fi
 
     if ! ip -4 addr flush dev "$iface" 2>/dev/null; then
@@ -180,9 +185,22 @@ _pi_manager_swap_begin_ip_cmd() {
         return 1
     fi
 
-    for ns in $dns; do
-        echo "nameserver $ns"
-    done >/etc/resolv.conf
+    {
+        for ns in $dns; do
+            echo "nameserver $ns"
+        done
+        echo "options timeout:2 attempts:3"
+    } >/etc/resolv.conf
+
+    if command -v resolvectl >/dev/null 2>&1; then
+        resolvectl flush-caches 2>/dev/null || true
+    fi
+
+    # dhcpcd (comum no Raspberry Pi OS) reescreve resolv.conf; parar durante a janela de swap.
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet dhcpcd 2>/dev/null; then
+        systemctl stop dhcpcd 2>/dev/null || true
+        echo "DHCPD_WAS_ACTIVE=1" >>"$PI_MANAGER_NETWORK_SWAP_STATE"
+    fi
 
     sleep 1
     echo "pi-manager: IPv4 temporário aplicado via iproute2 (${temp}/${prefix}); estado anterior guardado."
@@ -218,6 +236,13 @@ _pi_manager_restore_ip_cmd() {
     if [ -f "$resolv_bak" ]; then
         cp -a "$resolv_bak" /etc/resolv.conf 2>/dev/null || true
         rm -f "$resolv_bak" 2>/dev/null || true
+    fi
+    # Preferir NetworkManager (instalado no [3]); senão repor dhcpcd se o parámos durante o swap.
+    if command -v nmcli >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1; then
+        systemctl enable NetworkManager 2>/dev/null || true
+        systemctl start NetworkManager 2>/dev/null || true
+    elif grep -q '^DHCPD_WAS_ACTIVE=1' "$PI_MANAGER_NETWORK_SWAP_STATE" 2>/dev/null && command -v systemctl >/dev/null 2>&1; then
+        systemctl start dhcpcd 2>/dev/null || true
     fi
     sleep 1
     return 0
