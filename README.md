@@ -29,7 +29,7 @@ Este repositório instala um **painel web** (Flask) que corre como **serviço sy
 ### Fluxo geral do instalador (`install.sh`)
 
 1. **Ambiente**: confirma que o hardware é Raspberry Pi, que corre como **root** (`sudo`) e cria o utilizador **`administrador`** com palavra-passe inicial `raspberry` se ainda não existir (deve alterar logo após o primeiro acesso).
-2. **Assistente opcional** (`scripts/install-wizard.sh`): em terminal interativo, **ENTER** aceita a configuração recomendada (cópia local do repositório para `/home/administrador/raspberry-pi-manager`); **`o`** abre opções simples (clonar do GitHub, pasta de instalação, rede temporária durante o `apt`, limpeza alargada de pastas antigas). Em automação: `PI_MANAGER_INSTALL_INTERACTIVE=0`.
+2. **Assistente opcional** (`scripts/install-wizard.sh`): em terminal interativo, **ENTER** aceita a configuração recomendada (cópia local do repositório para `/home/administrador/raspberry-pi-manager`); em seguida pergunta se quer **troca de IPv4 temporária só para o passo `apt`** (útil quando `deb.debian.org` devolve **403** na rede atual). **`o`** abre opções completas (GitHub, pasta, rede, limpeza alargada). Em automação: `PI_MANAGER_INSTALL_INTERACTIVE=0`. Variáveis `PI_*` antes do `sudo`: **`sudo -E ./install.sh`**.
 3. **Limpeza de instalações antigas**: remove apenas pastas com nomes previsíveis (`raspberry-pi-manager` / `raspberry_pi_manager`) em caminhos seguros; a varredura larga `*pi-manager*` exige `PI_MANAGER_LEGACY_WIDE_CLEANUP=1`.
 4. **Variáveis** como `INSTALL_DIR`, `PI_MANAGER_CHROMIUM_USER_DATA_DIR`, `CLONE_FROM_GITHUB` podem ser definidas **antes** de correr o script (ou via assistente).
 5. **Rede opcional para atualizações**: se `PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1`, o script pode guardar o IPv4 atual, aplicar um endereço temporário (ex. rede de gestão) durante o `apt`, e restaurar — requer `nmcli` / NetworkManager (ver tabela mais abaixo).
@@ -323,6 +323,16 @@ Visualize status em tempo real:
 
 - Verifique se está rodando em um Raspberry Pi original
 - Tente comentar a verificação em `install.sh` (linha 28) se estiver em emulador
+
+### apt durante `install.sh`: 403 Forbidden em `deb.debian.org`
+
+Isto **não é um bug do instalador**: a rede onde o Pi está (firewall, proxy, política regional ou bloqueio do espelho) recusa HTTP ao espelho Debian. O **ping** a 8.8.8.8 pode funcionar e mesmo assim o `apt update` falhar com **403**.
+
+**Solução prevista no projeto:** no assistente, após escolher a configuração recomendada (ENTER), responda **s** à pergunta **«Ativar troca de IPv4 temporária para o apt?»** — o script aplica o endereço configurável (por omissão **10.0.8.94**), corre o passo **[2/12]** e **repõe** a configuração anterior. Indique o **gateway** da rede onde o Debian é acessível (ex.: `10.0.8.1`). Requer **NetworkManager** (`nmcli`); o instalador tenta instalar o pacote `network-manager` cedo se a troca estiver ativa (se esse `apt` também falhar com 403, ligue o Pi **uma vez** a uma rede que permita `apt` ou instale `network-manager` manualmente).
+
+**Variáveis por linha de comandos** (útil em scripts): defina `PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1` e `PI_MANAGER_UPDATE_GW=...` e corra **`sudo -E ./install.sh`** — o **`sudo` sem `-E` apaga as variáveis** `PI_*` do seu utilizador.
+
+**Outras opções:** usar espelhos em `https://` (editar `/etc/apt/sources.list` com cuidado), ou rede/VPN conforme a política da sua organização.
 
 ### Erro: "Permission denied" ao fazer push
 

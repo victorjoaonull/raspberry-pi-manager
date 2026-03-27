@@ -18,7 +18,8 @@ echo "╔═══════════════════════�
 echo "║      INSTALADOR DO GERENCIADOR RASPBERRY PI          ║"
 echo "╚═══════════════════════════════════════════════════════╝"
 echo -e "${NC}"
-echo "  Dica: na configuração rápida, prima ENTER para usar as opções recomendadas."
+echo "  Dica: na configuração rápida, prima ENTER; depois pode ativar troca de IP só para o apt se vir 403."
+echo "  Variáveis PI_* antes do sudo: use  sudo -E ./install.sh  (senão o sudo remove o ambiente)."
 echo ""
 
 # ========== VERIFICAÇÕES INICIAIS ==========

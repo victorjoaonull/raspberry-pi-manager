@@ -29,13 +29,34 @@ pi_manager_install_run_wizard() {
     echo "  • Instala a partir desta pasta (cópia local)"
     echo "  • Pasta da aplicação: ${_id}"
     echo ""
-    echo -ne "  \033[1;33mPressione ENTER\033[0m para continuar com estas opções."
-    echo " Digite \033[1;33mo\033[0m e ENTER para outras opções simples: "
+    echo -e "  \033[1;33mPressione ENTER\033[0m para continuar com estas opções."
+    echo -e "  Digite \033[1;33mo\033[0m e ENTER para outras opções simples: "
     read -r line || true
     line="$(echo "${line:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
 
     if [ "$line" != "o" ] && [ "$line" != "opcoes" ] && [ "$line" != "opções" ]; then
         echo -e "  \033[0;32m✓\033[0m A usar configuração recomendada."
+        echo ""
+        # Troca de IP para o apt: redes que devolvem 403 em deb.debian.org (só com ENTER; não exige menu "o")
+        if [ "${PI_MANAGER_NETWORK_SWAP_FOR_UPDATE:-0}" != "1" ]; then
+            echo "  Se o apt não conseguir aceder aos espelhos Debian (erro 403 em HTTP), pode usar"
+            echo "  um IPv4 temporário (por omissão 10.0.8.94) só durante o passo [2/12] e depois repor."
+            echo "  Requer NetworkManager (nmcli). O SSH pode cortar se o IP não for acessível ao seu PC."
+            echo -ne "  Ativar troca de IPv4 temporária para o apt? [s/N]: "
+            read -r _swap_ans || true
+            _swap_ans="$(echo "${_swap_ans:-}" | tr '[:upper:]' '[:lower:]')"
+            case "${_swap_ans:-}" in
+                s|sim|y|yes)
+                    export PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1
+                    echo -ne "  Gateway durante o apt (ex.: 10.0.8.1) [Enter = vazio]: "
+                    read -r _gw || true
+                    if [ -n "${_gw:-}" ]; then
+                        export PI_MANAGER_UPDATE_GW="$_gw"
+                    fi
+                    echo -e "  \033[0;32m✓\033[0m Troca de rede para o apt ativada (IPv4 por omissão: 10.0.8.94; exporte PI_MANAGER_UPDATE_IPV4 para outro)."
+                    ;;
+            esac
+        fi
         echo ""
         return 0
     fi
