@@ -59,17 +59,10 @@ if [ -f "$_INSTALL_WIZARD" ]; then
     pi_manager_install_run_wizard || true
 fi
 
-# Troca IPv4 imediata após "sim" no assistente (ou PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1 no ambiente)
+# Troca IPv4 logo após o assistente (ou PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1): antes de qualquer apt instalar
+# network-manager — NM+nmcli se existirem; senão iproute2 (`ip`) para o range correto no apt.
 _SWAP_LIB="${REPO_DIR}/scripts/lib-network-swap-for-update.sh"
 if [ "${PI_MANAGER_NETWORK_SWAP_FOR_UPDATE:-0}" = "1" ] && [ -f "$_SWAP_LIB" ]; then
-    if ! command -v nmcli >/dev/null 2>&1; then
-        echo -e "${YELLOW}[--] PI_MANAGER_NETWORK_SWAP: a instalar network-manager…${NC}"
-        apt-get update -qq || true
-        apt-get install -y -qq network-manager || true
-        systemctl enable NetworkManager 2>/dev/null || true
-        systemctl start NetworkManager 2>/dev/null || true
-        sleep 2
-    fi
     # shellcheck source=scripts/lib-network-swap-for-update.sh
     source "$_SWAP_LIB"
     echo -e "${BLUE}[swap]${NC} A aplicar IPv4 temporário (${PI_MANAGER_UPDATE_IPV4:-10.0.8.94}, gw ${PI_MANAGER_UPDATE_GW:-10.0.0.1}) agora…"

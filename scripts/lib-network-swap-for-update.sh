@@ -6,7 +6,8 @@
 # Opcional: PI_MANAGER_UPDATE_IPV4 (omissão 10.0.8.94), PI_MANAGER_UPDATE_PREFIX,
 #           PI_MANAGER_UPDATE_GW (omissão 10.0.0.1), PI_MANAGER_UPDATE_DNS (omissão 8.8.8.8 8.8.4.4)
 #
-# Requisitos: nmcli (pacote network-manager), típico no Raspberry Pi OS com NM.
+# Preferência: nmcli (NetworkManager). Se nmcli/NM não estiverem disponíveis, usa-se
+# iproute2 (`ip`) para aplicar o range **antes** de qualquer apt instalar network-manager.
 # shellcheck shell=bash
 
 PI_MANAGER_NETWORK_SWAP_STATE="${PI_MANAGER_NETWORK_SWAP_STATE:-/run/pi-manager-network-swap.state}"
@@ -84,6 +85,156 @@ _pi_manager_apply_temp_ipv4() {
         [ -n "$dev" ] && nmcli device reapply "$dev" 2>/dev/null || true
     fi
     sleep 2
+}
+
+# --- Fallback iproute2: sem network-manager; permite trocar de range antes do apt instalar NM ---
+_pi_manager_find_default_iface() {
+    local iface
+    iface=$(ip -4 route show default 2>/dev/null | awk '{if($1=="default"){print $5; exit}}')
+    if [ -n "$iface" ]; then
+        echo "$iface"
+        return 0
+    fi
+    iface=$(ip -4 route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    if [ -n "$iface" ]; then
+        echo "$iface"
+        return 0
+    fi
+    return 1
+}
+
+_pi_manager_swap_begin_ip_cmd() {
+    local iface temp prefix gw dns i line old_gw resolv_bak
+    command -v ip >/dev/null 2>&1 || return 1
+    iface="$(_pi_manager_find_default_iface)" || return 1
+
+    temp="${PI_MANAGER_UPDATE_IPV4:-10.0.8.94}"
+    prefix="${PI_MANAGER_UPDATE_PREFIX:-24}"
+    gw="${PI_MANAGER_UPDATE_GW:-10.0.0.1}"
+    dns="${PI_MANAGER_UPDATE_DNS:-8.8.8.8 8.8.4.4}"
+    mkdir -p "$(dirname "$PI_MANAGER_NETWORK_SWAP_STATE")" 2>/dev/null || true
+
+    i=0
+    old_gw="$(ip -4 route show default dev "$iface" 2>/dev/null | awk '{if($1=="default"){print $3; exit}}')"
+    {
+        echo "STATE_VERSION=2"
+        echo "MODE=ip"
+        echo "IFACE=$iface"
+        echo "OLD_GW=${old_gw}"
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            i=$((i + 1))
+            echo "ADDR_$i=$line"
+        done < <(ip -4 -o addr show dev "$iface" scope global 2>/dev/null | awk '{print $4}')
+    } >"$PI_MANAGER_NETWORK_SWAP_STATE"
+    chmod 600 "$PI_MANAGER_NETWORK_SWAP_STATE" 2>/dev/null || true
+
+    if [ "$i" -eq 0 ]; then
+        echo "pi-manager: sem endereços IPv4 em $iface para guardar; swap IP (iproute2) abortado." >&2
+        rm -f "$PI_MANAGER_NETWORK_SWAP_STATE" 2>/dev/null || true
+        return 1
+    fi
+
+    resolv_bak="${PI_MANAGER_NETWORK_SWAP_STATE}.resolv.bak"
+    if [ -f /etc/resolv.conf ]; then
+        cp -a /etc/resolv.conf "$resolv_bak" 2>/dev/null || true
+    fi
+
+    if ! ip -4 addr flush dev "$iface" 2>/dev/null; then
+        echo "pi-manager: falha ao limpar IPv4 em $iface." >&2
+        rm -f "$PI_MANAGER_NETWORK_SWAP_STATE" "$resolv_bak" 2>/dev/null || true
+        return 1
+    fi
+
+    if ! ip addr add "${temp}/${prefix}" dev "$iface" scope global; then
+        echo "pi-manager: falha ao adicionar IPv4 temporário." >&2
+        _pi_manager_restore_ip_cmd || true
+        rm -f "$PI_MANAGER_NETWORK_SWAP_STATE" 2>/dev/null || true
+        return 1
+    fi
+
+    if ! ip route replace default via "$gw" dev "$iface" 2>/dev/null && ! ip route add default via "$gw" dev "$iface" 2>/dev/null; then
+        echo "pi-manager: falha ao definir rota padrão." >&2
+        _pi_manager_restore_ip_cmd || true
+        rm -f "$PI_MANAGER_NETWORK_SWAP_STATE" 2>/dev/null || true
+        return 1
+    fi
+
+    for ns in $dns; do
+        echo "nameserver $ns"
+    done >/etc/resolv.conf
+
+    sleep 1
+    echo "pi-manager: IPv4 temporário aplicado via iproute2 (${temp}/${prefix}); estado anterior guardado."
+    return 0
+}
+
+_pi_manager_restore_ip_cmd() {
+    local iface old_gw resolv_bak line k v
+    resolv_bak="${PI_MANAGER_NETWORK_SWAP_STATE}.resolv.bak"
+    [ -f "$PI_MANAGER_NETWORK_SWAP_STATE" ] || return 1
+    iface="$(grep -m1 '^IFACE=' "$PI_MANAGER_NETWORK_SWAP_STATE" | cut -d= -f2-)"
+    old_gw="$(grep -m1 '^OLD_GW=' "$PI_MANAGER_NETWORK_SWAP_STATE" | cut -d= -f2-)"
+    [ -n "$iface" ] || return 1
+
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet NetworkManager 2>/dev/null; then
+        systemctl stop NetworkManager 2>/dev/null || true
+    fi
+    ip -4 addr flush dev "$iface" 2>/dev/null || true
+    while IFS= read -r line || [ -n "$line" ]; do
+        [ -z "$line" ] && continue
+        k="${line%%=*}"
+        v="${line#*=}"
+        case "$k" in
+            ADDR_*)
+                [ -n "$v" ] && ip addr add "$v" dev "$iface" scope global 2>/dev/null || true
+                ;;
+        esac
+    done <"$PI_MANAGER_NETWORK_SWAP_STATE"
+
+    if [ -n "$old_gw" ]; then
+        ip route replace default via "$old_gw" dev "$iface" 2>/dev/null || \
+        ip route add default via "$old_gw" dev "$iface" 2>/dev/null || true
+    fi
+    if [ -f "$resolv_bak" ]; then
+        cp -a "$resolv_bak" /etc/resolv.conf 2>/dev/null || true
+        rm -f "$resolv_bak" 2>/dev/null || true
+    fi
+    sleep 1
+    return 0
+}
+
+_pi_manager_swap_begin_nm() {
+    if ! command -v nmcli >/dev/null 2>&1; then
+        return 1
+    fi
+    if ! _pi_manager_ensure_nm; then
+        return 1
+    fi
+
+    local dev
+    dev="$(_pi_manager_first_connected_device)" || return 1
+
+    if ! _pi_manager_save_state "$dev"; then
+        return 1
+    fi
+
+    local uuid
+    uuid="$(awk -F= '$1=="UUID"{print $2;exit}' "$PI_MANAGER_NETWORK_SWAP_STATE" 2>/dev/null)"
+    if [ -z "$uuid" ]; then
+        rm -f "$PI_MANAGER_NETWORK_SWAP_STATE" 2>/dev/null || true
+        return 1
+    fi
+
+    if ! _pi_manager_apply_temp_ipv4 "$uuid" "$dev"; then
+        echo "pi-manager: falha ao aplicar IPv4 temporário (nmcli); a restaurar estado anterior…" >&2
+        _pi_manager_restore_from_state || true
+        rm -f "$PI_MANAGER_NETWORK_SWAP_STATE" 2>/dev/null || true
+        return 1
+    fi
+
+    echo "pi-manager: IPv4 temporário aplicado (${PI_MANAGER_UPDATE_IPV4:-10.0.8.94}); estado anterior guardado."
+    return 0
 }
 
 # Lê estado (uma chave=valor por linha; valor pode conter '='; DNS pode ter espaços)
@@ -166,8 +317,14 @@ pi_manager_network_swap_end() {
         return 0
     fi
     trap - EXIT INT TERM HUP 2>/dev/null || true
-    _pi_manager_restore_from_state || echo "pi-manager: aviso — falha ao restaurar IPv4 (verifique nmcli)." >&2
-    rm -f "$PI_MANAGER_NETWORK_SWAP_STATE" 2>/dev/null || true
+    local ver
+    ver="$(grep -m1 '^STATE_VERSION=' "$PI_MANAGER_NETWORK_SWAP_STATE" 2>/dev/null | cut -d= -f2)"
+    if [ "$ver" = "2" ]; then
+        _pi_manager_restore_ip_cmd || echo "pi-manager: aviso — falha ao restaurar IPv4 (iproute2)." >&2
+    else
+        _pi_manager_restore_from_state || echo "pi-manager: aviso — falha ao restaurar IPv4 (verifique nmcli)." >&2
+    fi
+    rm -f "$PI_MANAGER_NETWORK_SWAP_STATE" "${PI_MANAGER_NETWORK_SWAP_STATE}.resolv.bak" 2>/dev/null || true
     _PI_MANAGER_SWAP_ACTIVE=0
 }
 
@@ -176,43 +333,16 @@ pi_manager_network_swap_begin() {
     if [ "${PI_MANAGER_NETWORK_SWAP_FOR_UPDATE:-0}" != "1" ]; then
         return 1
     fi
-    if ! command -v nmcli >/dev/null 2>&1; then
-        echo "pi-manager: PI_MANAGER_NETWORK_SWAP_FOR_UPDATE=1 mas nmcli não está instalado; swap ignorado." >&2
-        return 1
+    if _pi_manager_swap_begin_nm; then
+        _PI_MANAGER_SWAP_ACTIVE=1
+        trap 'pi_manager_network_swap_cleanup' EXIT INT TERM HUP
+        return 0
     fi
-    if ! _pi_manager_ensure_nm; then
-        echo "pi-manager: NetworkManager não está ativo; swap ignorado." >&2
-        return 1
+    if _pi_manager_swap_begin_ip_cmd; then
+        _PI_MANAGER_SWAP_ACTIVE=1
+        trap 'pi_manager_network_swap_cleanup' EXIT INT TERM HUP
+        return 0
     fi
-
-    local dev
-    dev="$(_pi_manager_first_connected_device)" || {
-        echo "pi-manager: sem interface ligada (nmcli); swap ignorado." >&2
-        return 1
-    }
-
-    if ! _pi_manager_save_state "$dev"; then
-        echo "pi-manager: não foi possível guardar estado da ligação; swap abortado." >&2
-        return 1
-    fi
-
-    local uuid
-    uuid="$(awk -F= '$1=="UUID"{print $2;exit}' "$PI_MANAGER_NETWORK_SWAP_STATE" 2>/dev/null)"
-    if [ -z "$uuid" ]; then
-        echo "pi-manager: UUID em falta no estado; swap abortado." >&2
-        rm -f "$PI_MANAGER_NETWORK_SWAP_STATE" 2>/dev/null || true
-        return 1
-    fi
-
-    if ! _pi_manager_apply_temp_ipv4 "$uuid" "$dev"; then
-        echo "pi-manager: falha ao aplicar IPv4 temporário; a restaurar estado anterior…" >&2
-        _pi_manager_restore_from_state || true
-        rm -f "$PI_MANAGER_NETWORK_SWAP_STATE" 2>/dev/null || true
-        return 1
-    fi
-
-    _PI_MANAGER_SWAP_ACTIVE=1
-    trap 'pi_manager_network_swap_cleanup' EXIT INT TERM HUP
-    echo "pi-manager: IPv4 temporário aplicado (${PI_MANAGER_UPDATE_IPV4:-10.0.8.94}); estado anterior guardado."
-    return 0
+    echo "pi-manager: swap de IPv4 não aplicado (NetworkManager indisponível e iproute2 falhou ou incompleto)." >&2
+    return 1
 }
