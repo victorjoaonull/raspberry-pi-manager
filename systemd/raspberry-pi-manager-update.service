@@ -1,0 +1,13 @@
+[Unit]
+Description=Verifica e aplica atualizações do raspberry-pi-manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Roda como root: pode reiniciar o serviço sem sudo. As operações de git/pip
+# são feitas COMO o usuário dono do repositório (ver update_app.sh / as_owner).
+Environment="SERVICE_NAME=raspberry-pi-manager"
+Environment="INSTALL_DIR=/home/administrador/raspberry-pi-manager"
+Environment="RUN_USER=administrador"
+ExecStart=/usr/local/bin/update_app.sh

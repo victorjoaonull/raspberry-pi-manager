@@ -1,0 +1,17 @@
+name: Validação (CI)
+
+# Valida os contratos do projeto (ver CLAUDE.md) em todo push e PR.
+on:
+  pull_request:
+  push:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Validar contratos
+        run: bash scripts/validate.sh

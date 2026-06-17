@@ -1,0 +1,13 @@
+[Unit]
+Description=Dispara a verificação de atualização 1x por semana, em dia/horário aleatório
+
+[Timer]
+# Base semanal (segunda 00:00) + atraso aleatório de até 7 dias.
+# Efeito: cada execução cai em um dia/horário ALEATÓRIO da semana e é
+# re-sorteada a cada semana. Cada Pi sorteia o seu próprio dia (espalha a carga).
+OnCalendar=weekly
+RandomizedDelaySec=7d
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -8,17 +8,60 @@ import re
 import threading
 import time
 import shutil
-import hashlib
 from pathlib import Path
 from datetime import datetime
 from collections import deque
-import hmac
-import hashlib
-import threading
-import subprocess
 
 app = Flask(__name__)
-app.secret_key = 'sil1234567890'  # Chave secreta para sessões
+
+
+def _load_secret_key():
+    """Obtém a secret_key do Flask de forma segura.
+
+    Ordem de prioridade:
+    1. Variável de ambiente SECRET_KEY (definida em /etc/default/raspberry-pi-manager).
+    2. Arquivo persistente em ~/.config/raspberry-pi-manager/secret_key.
+    3. Gera uma nova chave aleatória e a persiste no arquivo acima.
+
+    Persistir a chave evita invalidar todas as sessões a cada restart do serviço.
+    """
+    env_key = os.environ.get('SECRET_KEY')
+    if env_key:
+        return env_key
+
+    key_dir = Path.home() / '.config' / 'raspberry-pi-manager'
+    key_file = key_dir / 'secret_key'
+
+    try:
+        if key_file.exists():
+            existing = key_file.read_text().strip()
+            if existing:
+                return existing
+    except Exception as e:
+        print(f"⚠️ Não foi possível ler secret_key existente: {e}")
+
+    new_key = os.urandom(32).hex()
+    try:
+        key_dir.mkdir(parents=True, exist_ok=True)
+        key_file.write_text(new_key)
+        os.chmod(key_file, 0o600)
+        print(f"🔐 Nova secret_key gerada e salva em {key_file}")
+    except Exception as e:
+        print(f"⚠️ Não foi possível persistir secret_key (usando apenas em memória): {e}")
+
+    return new_key
+
+
+app.secret_key = _load_secret_key()
+
+# Blindagem dos cookies de sessão (login):
+# - HTTPONLY: JavaScript da página não consegue ler o cookie (protege de XSS).
+# - SAMESITE 'Lax': o cookie não é enviado em requisições vindas de outros sites
+#   (protege de CSRF). 'Lax' mantém a navegação normal funcionando.
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+)
 
 
 
@@ -72,10 +115,14 @@ def run_hostname(new_hostname, capture_output=True, text=True, timeout=10):
             raise
 
 # Configurações
-CONFIG_DIR = '/home/administrador/pi-manager/config'
+# IMPORTANTE: os caminhos são derivados da raiz do repositório (pasta-pai de src/),
+# para ficarem sempre alinhados com install.sh (que cria $INSTALL_DIR/config).
+# NÃO use caminhos absolutos hardcoded aqui — quebra o contrato com o instalador.
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONFIG_DIR = os.path.join(BASE_DIR, 'config')
 NETWORK_CONFIG = os.path.join(CONFIG_DIR, 'network.conf')
 AUTOSTART_CONFIG = os.path.join(CONFIG_DIR, 'autostart.conf')
-LOG_DIR = '/home/administrador/pi-manager/logs'
+LOG_DIR = os.path.join(BASE_DIR, 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
 BROWSER_LOG = os.path.join(LOG_DIR, 'browser-launch.log')
 
@@ -428,9 +475,9 @@ favorites_manager = ChromiumFavoritesManager()
 
 # ========== FUNÇÕES AUXILIARES ==========
 def check_auth():
-    auth = session.get('authenticated')
-    print(f"DEBUG check_auth: session={dict(session)}, authenticated={auth}", flush=True)
-    return auth
+    # Retorna True se a sessão atual estiver autenticada.
+    # NÃO logar o conteúdo da sessão aqui (vaza cookies/sessão nos logs).
+    return session.get('authenticated')
 
 def get_cpu_usage():
     try:
@@ -476,7 +523,12 @@ def load_autostart_urls():
     try:
         if os.path.exists(AUTOSTART_CONFIG):
             with open(AUTOSTART_CONFIG, 'r') as f:
-                urls = [line.strip() for line in f.readlines() if line.strip()]
+                # Ignora linhas vazias e comentários (começando com '#')
+                urls = [
+                    line.strip()
+                    for line in f.readlines()
+                    if line.strip() and not line.strip().startswith('#')
+                ]
                 print(f"📋 URLs carregadas do autostart.conf: {urls}")
                 return urls
         print("📭 Arquivo autostart.conf não encontrado ou vazio")
@@ -566,93 +618,64 @@ def cleanup_chromium_locks():
     Remove todos os arquivos de lock do Chromium para evitar conflitos de hostname.
     Deve ser chamada após alterar o hostname e antes de iniciar o browser.
     """
+    import glob
+
     try:
         add_event("🧹 Iniciando limpeza de locks do Chromium...")
-        
+
         profile_dir = '/home/administrador/chromium-profile'
         default_profile_dir = '/home/administrador/.config/chromium'
         cache_dir = '/home/administrador/.cache/chromium'
-        
-        # 1. Mata processos do Chromium (força bruta)
-        subprocess.run(['sudo', 'pkill', '-9', '-f', 'chromium'], 
+
+        # 1. Mata processos do Chromium (precisa de sudo; permitido no sudoers)
+        subprocess.run(['sudo', 'pkill', '-9', '-f', 'chromium'],
                       stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
         time.sleep(1.5)
-        
-        # 2. Remove locks do perfil personalizado
+
+        # 2. Padrões de lock a remover. Os curingas são expandidos pelo glob do
+        #    Python (passá-los direto ao 'rm' via subprocess NÃO expandia nada).
         lock_patterns = [
-            'SingletonLock',
-            'SingletonSocket',
-            'SingletonCookie',
-            'SingletonLock-*',
-            'SingletonSocket-*',
-            '.com.google.Chrome*',
-            'SingletonLock.*',
-            'SingletonSocket.*'
+            'SingletonLock', 'SingletonLock-*', 'SingletonLock.*',
+            'SingletonSocket', 'SingletonSocket-*', 'SingletonSocket.*',
+            'SingletonCookie', '.com.google.Chrome*',
         ]
-        
-        for pattern in lock_patterns:
-            # Remove do diretório raiz do profile
-            subprocess.run([
-                'sudo', '-u', 'administrador',
-                'rm', '-f',
-                f'{profile_dir}/{pattern}'
-            ], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-            
-            # Remove do diretório Default
-            subprocess.run([
-                'sudo', '-u', 'administrador',
-                'rm', '-f',
-                f'{profile_dir}/Default/{pattern}'
-            ], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-        
-        # 3. Remove locks do perfil padrão (segurança extra)
-        subprocess.run([
-            'sudo', '-u', 'administrador',
-            'rm', '-f',
-            f'{default_profile_dir}/Singleton*'
-        ], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-        
-        # 4. Remove locks do diretório de cache
-        if os.path.exists(cache_dir):
-            subprocess.run([
-                'sudo', '-u', 'administrador',
-                'rm', '-f',
-                f'{cache_dir}/Singleton*'
-            ], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-        
-        # 5. Remove arquivos de lock específicos do chromium-profile
-        specific_locks = [
-            f'{profile_dir}/SingletonLock',
-            f'{profile_dir}/SingletonSocket',
-            f'{profile_dir}/Default/SingletonLock',
-            f'{profile_dir}/Default/SingletonSocket'
+        # Diretórios onde procurar (o serviço roda como 'administrador', dono dos
+        # arquivos, então os removemos diretamente — sem sudo).
+        search_dirs = [
+            profile_dir,
+            os.path.join(profile_dir, 'Default'),
+            default_profile_dir,
+            cache_dir,
         ]
-        
-        for lock_file in specific_locks:
-            if os.path.exists(lock_file):
-                try:
-                    os.remove(lock_file)
-                except:
-                    subprocess.run(['sudo', 'rm', '-f', lock_file], 
-                                 stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-        
-        # 6. Verifica se ainda existem locks residuais (agora sem capture_output)
-        try:
-            check = subprocess.run([
-                'sudo', '-u', 'administrador',
-                'find', profile_dir, '-name', "Singleton*", '-o', '-name', ".com.google.Chrome*"
-            ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5)
-            
-            if check.stdout and check.stdout.strip():
-                add_event(f"⚠️ Aviso: locks residuais encontrados: {check.stdout.strip()[:200]}...")
-            else:
-                add_event("✅ Todos os locks do Chromium foram removidos")
-        except:
-            add_event("✅ Verificação de locks concluída")
-            
+
+        removed = 0
+        for d in search_dirs:
+            if not os.path.isdir(d):
+                continue
+            for pattern in lock_patterns:
+                for path in glob.glob(os.path.join(d, pattern)):
+                    try:
+                        os.remove(path)
+                        removed += 1
+                    except OSError as e:
+                        add_event(f"⚠️ Não consegui remover {path}: {e}")
+
+        # 3. Verifica se ainda restou algum lock
+        residual = []
+        for d in search_dirs:
+            if not os.path.isdir(d):
+                continue
+            for pattern in lock_patterns:
+                residual.extend(glob.glob(os.path.join(d, pattern)))
+
+        if residual:
+            add_event(f"⚠️ Aviso: locks residuais: {', '.join(residual)[:200]}")
+        else:
+            add_event(f"✅ Locks do Chromium removidos ({removed} arquivo(s))")
+
         add_event("🧹 Limpeza do Chromium finalizada")
         return True
-        
+
     except Exception as e:
         add_event(f"❌ Erro ao limpar locks do Chromium: {e}")
         # Não levanta exceção - apenas loga e continua
@@ -1784,15 +1807,8 @@ def diagnostic_wrappers():
     return jsonify({'success': True, 'wrappers': info})
 
 
-@app.route('/api/diagnostic/session', methods=['GET'])
-def diagnostic_session():
-    """Debug endpoint: mostra o conteúdo da sessão e cookies recebidos (apenas local)."""
-    try:
-        sess = dict(session)
-        cookies = {k: v for k, v in request.cookies.items()}
-        return jsonify({'success': True, 'session': sess, 'cookies': cookies})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+# (Removido) /api/diagnostic/session: endpoint de debug que expunha sessão e
+# cookies sem autenticação. Não tem uso em produção e era um risco de segurança.
 
 # ========== PÁGINAS WEB (ROTAS SIMPLES) ==========
 @app.route('/login', methods=['GET', 'POST'])
@@ -1891,52 +1907,22 @@ with app.app_context():
 
 @app.route('/about')
 def about():
+    if not check_auth():
+        return redirect(url_for('login'))
     return render_template('about.html')
 
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """Endpoint to receive GitHub webhook and trigger update script.
-
-    Expects header 'X-Hub-Signature-256: sha256=...' and secret in env WEBHOOK_SECRET.
-    """
-    secret = os.environ.get('WEBHOOK_SECRET')
-    if not secret:
-        add_event('Webhook called but WEBHOOK_SECRET not set')
-        return 'Server misconfigured', 500
-
-    signature = request.headers.get('X-Hub-Signature-256', '')
-    body = request.get_data()
-
-    mac = hmac.new(secret.encode(), msg=body, digestmod=hashlib.sha256)
-    expected = f'sha256={mac.hexdigest()}'
-
-    if not hmac.compare_digest(expected, signature):
-        add_event('Webhook signature mismatch')
-        return 'Unauthorized', 401
-
-    # Run update script in background so we respond quickly
-    def run_update():
-        try:
-            repo_root = os.path.abspath(os.path.join(app.root_path, '..'))
-            script_path = os.path.join(repo_root, 'update_app.sh')
-            add_event('Webhook validated — running update script')
-            # Use bash to run even if file is not executable
-            proc = subprocess.run(['/bin/bash', script_path], capture_output=True, text=True, timeout=600)
-            add_event(f'Update stdout: {proc.stdout[:1000]}')
-            if proc.stderr:
-                add_event(f'Update stderr: {proc.stderr[:1000]}')
-        except Exception as e:
-            add_event(f'Error running update: {e}')
-
-    t = threading.Thread(target=run_update)
-    t.daemon = True
-    t.start()
-
-    return 'OK', 200
+# NOTA: o endpoint /webhook (modelo PUSH via GitHub Actions) foi removido.
+# A atualização agora é feita pelo modelo PULL: cada Pi verifica o GitHub 1x por
+# semana, em dia aleatório (raspberry-pi-manager-update.timer / update_app.sh).
 
 if __name__ == '__main__':
     debug_mode = os.environ.get('DEBUG', 'False').lower() == 'true'
+    # Por padrão o Flask escuta só em 127.0.0.1 (localhost), porque o acesso
+    # externo passa pelo nginx em HTTPS. Para rodar sem nginx (dev), defina
+    # FLASK_HOST=0.0.0.0 no ambiente.
+    host = os.environ.get('FLASK_HOST', '127.0.0.1')
+    port = int(os.environ.get('FLASK_PORT', '5000'))
     print(f"🚀 Iniciando servidor Flask em modo {'debug' if debug_mode else 'produção'}...")
-    print(f"🌐 Acesse em: http://0.0.0.0:5000")
-    app.run(host='0.0.0.0', port=5000, debug=debug_mode, threaded=True)
+    print(f"🌐 Escutando em: http://{host}:{port} (acesso externo via nginx/HTTPS)")
+    app.run(host=host, port=port, debug=debug_mode, threaded=True)

@@ -1,0 +1,36 @@
+[Unit]
+Description=Gerenciador Web Raspberry PI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=administrador
+Group=administrador
+WorkingDirectory=/home/administrador/raspberry-pi-manager
+EnvironmentFile=/etc/default/raspberry-pi-manager
+ExecStart=/home/administrador/raspberry-pi-manager/venv/bin/python /home/administrador/raspberry-pi-manager/src/app.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=raspberry-pi-manager
+
+# Segurança / sandboxing
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/administrador/raspberry-pi-manager /home/administrador/chromium-profile /home/administrador/.config/raspberry-pi-manager
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Ambiente mínimo
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+
+# NOTA: este arquivo é uma REFERÊNCIA. O install.sh gera um unit equivalente
+# automaticamente. Mantenha os dois alinhados (ExecStart, EnvironmentFile,
+# ReadWritePaths) — ver contrato C7 em CLAUDE.md.
+
+[Install]
+WantedBy=multi-user.target

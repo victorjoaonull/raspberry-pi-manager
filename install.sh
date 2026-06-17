@@ -78,7 +78,6 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GIT_REPO="${GIT_REPO:-https://github.com/victorjoaonull/raspberry-pi-manager.git}"
 # Se desejar clonar do GitHub, exporte CLONE_FROM_GITHUB=true antes de rodar
 CLONE_FROM_GITHUB="${CLONE_FROM_GITHUB:-false}"
-WEBHOOK_SECRET="${WEBHOOK_SECRET:-}"
 
 # ========== ATUALIZAR SISTEMA ==========
 echo -e "${BLUE}[2/12]${NC} Atualizando sistema..."
@@ -174,8 +173,8 @@ else
     exit 1
 fi
 
-# Executar aplicação
-exec python app.py
+# Executar aplicação (app.py fica em src/)
+exec python src/app.py
 EOF
 
 chmod +x "$INSTALL_DIR/run.sh"
@@ -308,7 +307,13 @@ chmod 640 /var/log/pi-manager-hostname.log || true
 # Escreve sudoers restrito apontando apenas para o wrapper (valide com visudo)
 
 cat > /etc/sudoers.d/pi-manager << 'EOF'
+# Wrappers privilegiados (executados como root)
 administrador ALL=(root) NOPASSWD: /usr/local/bin/pi-manager-nmcli, /usr/local/bin/pi-manager-chpasswd, /usr/local/bin/pi-manager-hostname
+# Operações que exigem root de fato (reboot/shutdown e matar processos do Chromium)
+administrador ALL=(root) NOPASSWD: /sbin/shutdown, /usr/sbin/shutdown, /usr/bin/pkill
+# Operações executadas COMO o próprio usuário administrador (sem escalonamento de privilégio):
+# o serviço já roda como administrador, então estes 'sudo -u administrador ...' não elevam permissão.
+administrador ALL=(administrador) NOPASSWD: /usr/bin/env, /usr/bin/rm, /usr/bin/find, /usr/bin/chromium, /usr/bin/chromium-browser, /usr/bin/xdpyinfo
 EOF
 chown root:root /etc/sudoers.d/pi-manager
 chmod 440 /etc/sudoers.d/pi-manager
@@ -319,7 +324,7 @@ if ! visudo -cf /etc/sudoers.d/pi-manager >/dev/null 2>&1; then
     exit 1
 fi
 
-# ========== CRIAR ARQUIVO DE AMBIENTE PARA WEBHOOK ==========
+# ========== CRIAR ARQUIVO DE AMBIENTE ==========
 echo -e "${BLUE}[11/12]${NC} Criando arquivo de variáveis de ambiente..."
 ENV_FILE="/etc/default/${SERVICE_NAME}"
 if [ ! -f "$ENV_FILE" ]; then
@@ -327,10 +332,16 @@ if [ ! -f "$ENV_FILE" ]; then
 # Variáveis de ambiente para raspberry-pi-manager
 # Edite este arquivo e reinicie o serviço: sudo systemctl restart raspberry-pi-manager
 
-# Secret para validar webhooks do GitHub (OBRIGATÓRIO para auto-update)
-WEBHOOK_SECRET=
+# Chave de assinatura das sessões Flask (RECOMENDADO definir).
+# Gere com: openssl rand -hex 32
+# Se vazio, o app gera/persiste automaticamente em ~/.config/raspberry-pi-manager/secret_key
+SECRET_KEY=
 
-# Nome do serviço systemd para reiniciar após atualização
+# Senha de acesso à interface web (login). Padrão do app: 'sil123'.
+# (NÃO confundir com a senha do usuário do sistema 'administrador', que é 'raspberry'.)
+ADMIN_PASSWORD=sil123
+
+# Nome do serviço systemd
 SERVICE_NAME=raspberry-pi-manager
 
 # Outras variáveis opcionais
@@ -340,7 +351,7 @@ SERVICE_NAME=raspberry-pi-manager
 ENVEOF
     chown root:root "$ENV_FILE"
     chmod 600 "$ENV_FILE"
-    echo "✅ Criado $ENV_FILE (configure WEBHOOK_SECRET nele)"
+    echo "✅ Criado $ENV_FILE"
 else
     echo "ℹ️  $ENV_FILE já existe; preservando."
 fi
@@ -361,7 +372,7 @@ User=administrador
 Group=administrador
 WorkingDirectory=$INSTALL_DIR
 EnvironmentFile=/etc/default/${SERVICE_NAME}
-ExecStart=$INSTALL_DIR/venv/bin/python $INSTALL_DIR/app.py
+ExecStart=$INSTALL_DIR/venv/bin/python $INSTALL_DIR/src/app.py
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -373,7 +384,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=full
 ProtectHome=read-only
-ReadWritePaths=$INSTALL_DIR /home/administrador/chromium-profile
+ReadWritePaths=$INSTALL_DIR /home/administrador/chromium-profile /home/administrador/.config/raspberry-pi-manager
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
 # Ambiente mínimo
@@ -386,6 +397,109 @@ EOF
 
 systemctl daemon-reload
 systemctl enable ${SERVICE_NAME}.service || true
+
+# ========== CONFIGURAR NGINX (HTTPS / PROXY REVERSO) ==========
+echo -e "${BLUE}[11.7/12]${NC} Configurando nginx com HTTPS (certificado autoassinado)..."
+
+# 1. Gera certificado autoassinado (válido por 10 anos) se ainda não existir.
+SSL_CERT=/etc/ssl/certs/pi-manager.crt
+SSL_KEY=/etc/ssl/private/pi-manager.key
+if [ ! -f "$SSL_CERT" ] || [ ! -f "$SSL_KEY" ]; then
+    openssl req -x509 -nodes -newkey rsa:2048 \
+        -keyout "$SSL_KEY" \
+        -out "$SSL_CERT" \
+        -days 3650 \
+        -subj "/CN=raspberry-pi-manager" >/dev/null 2>&1
+    chmod 600 "$SSL_KEY"
+    echo "✅ Certificado autoassinado gerado em $SSL_CERT"
+else
+    echo "ℹ️  Certificado já existe; preservando."
+fi
+
+# 2. Escreve o site do nginx: redireciona HTTP->HTTPS e faz proxy reverso para o Flask.
+cat > /etc/nginx/sites-available/${SERVICE_NAME} << EOF
+# Redireciona todo HTTP (porta 80) para HTTPS (porta 443)
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    return 301 https://\$host\$request_uri;
+}
+
+# HTTPS: termina o TLS e repassa para o Flask em 127.0.0.1:5000
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+
+    ssl_certificate     $SSL_CERT;
+    ssl_certificate_key $SSL_KEY;
+
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+
+# 3. Ativa o site e desativa o default do nginx
+ln -sf /etc/nginx/sites-available/${SERVICE_NAME} /etc/nginx/sites-enabled/${SERVICE_NAME}
+rm -f /etc/nginx/sites-enabled/default
+
+# 4. Testa a configuração e reinicia o nginx
+if nginx -t >/dev/null 2>&1; then
+    systemctl enable nginx >/dev/null 2>&1 || true
+    systemctl restart nginx
+    echo "✅ nginx configurado: acesse via https://<ip-do-pi>"
+else
+    echo -e "${RED}❌ Configuração do nginx inválida; verifique com 'sudo nginx -t'${NC}"
+fi
+
+# ========== CONFIGURAR ATUALIZAÇÃO AUTOMÁTICA SEMANAL (PULL) ==========
+echo -e "${BLUE}[11.8/12]${NC} Configurando verificador semanal de atualizações..."
+
+# Serviço oneshot que roda o atualizador (como root)
+cat > /etc/systemd/system/${SERVICE_NAME}-update.service << EOF
+[Unit]
+Description=Verifica e aplica atualizações do raspberry-pi-manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Roda como root: reinicia o serviço sem sudo. git/pip rodam como o dono do repo.
+Environment="SERVICE_NAME=${SERVICE_NAME}"
+Environment="INSTALL_DIR=${INSTALL_DIR}"
+Environment="RUN_USER=administrador"
+ExecStart=/usr/local/bin/update_app.sh
+EOF
+
+# Timer: 1x por semana, em dia/horário aleatório (re-sorteado a cada semana)
+cat > /etc/systemd/system/${SERVICE_NAME}-update.timer << 'EOF'
+[Unit]
+Description=Dispara a verificação de atualização 1x por semana, em dia/horário aleatório
+
+[Timer]
+# Base semanal + atraso aleatório de até 7 dias => cai num dia aleatório da semana.
+OnCalendar=weekly
+RandomizedDelaySec=7d
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+if systemctl enable --now ${SERVICE_NAME}-update.timer >/dev/null 2>&1; then
+    echo "✅ Verificador semanal ativado."
+    echo "   Veja o próximo disparo com: systemctl list-timers '${SERVICE_NAME}-update*'"
+    echo "   Force uma verificação agora com: sudo systemctl start ${SERVICE_NAME}-update.service"
+else
+    echo -e "${YELLOW}⚠️  Não foi possível ativar o timer de atualização.${NC}"
+fi
 
 # ========== CONFIGURAR AUTO-LOGIN ==========
 echo -e "${BLUE}[12/12]${NC} Configurando auto-login gráfico..."
@@ -466,12 +580,12 @@ echo -e "  ⏹️ Parar serviço: ${GREEN}sudo systemctl stop $SERVICE_NAME${NC}
 echo ""
 
 echo -e "${YELLOW}⚠️ IMPORTANTE:${NC}"
-echo -e "  • Acesse http://$IP_ADDRESS:5000 para usar o gerenciador"
+echo -e "  • Acesse https://$IP_ADDRESS para usar o gerenciador (aceite o aviso do certificado autoassinado)"
 echo -e "  • Configure as URLs em: $INSTALL_DIR/config/autostart.conf"
-echo -e "  • Usuário padrão: administrador / raspberry"
+echo -e "  • Login web: usuário 'administrador' / senha 'sil123' (senha do sistema é 'raspberry')"
 echo -e "  • ALTERE A SENHA PADRÃO após o primeiro login!"
-echo -e "  • PARA AUTO-UPDATE: Edite $ENV_FILE e defina WEBHOOK_SECRET"
-echo -e "    Comando: sudo nano $ENV_FILE"
+echo -e "  • AUTO-UPDATE: cada Pi verifica o GitHub 1x por semana automaticamente"
+echo -e "    Ver: systemctl list-timers '${SERVICE_NAME}-update*'"
 echo ""
 
 echo -e "${BLUE}🔄 Iniciando o serviço...${NC}"

@@ -8,7 +8,7 @@ Um gerenciador web completo para Raspberry Pi com controle de rede, sistema, aut
 - **Rede**: Gerenciamento de conexões Ethernet e Wi-Fi via NetworkManager
 - **Sistema**: Alteração de hostname, senha, reinicialização e desligamento
 - **Autostart**: Configuração de URLs para abrir automaticamente no Chromium
-- **Webhook**: Atualizações automáticas via GitHub Actions
+- **Atualização automática**: cada Pi verifica o GitHub 1× por semana (dia aleatório) e se atualiza sozinho
 - **Interface Responsiva**: Design limpo e profissional com logo e background
 
 ---
@@ -57,17 +57,27 @@ O script irá:
 
 ### 4. Acesse a aplicação
 
-Abra seu navegador e acesse:
+Abra seu navegador e acesse (via HTTPS, atendido pelo nginx):
 
 ```
-http://seu-pi.local:5000
+https://seu-pi.local
 ou
-http://192.168.1.100:5000
+https://192.168.1.100
 ```
 
-**Credenciais padrão:**
+> 🔒 O Pi usa um **certificado autoassinado** (não há domínio público numa rede
+> local). Na primeira vez o navegador mostra um aviso "conexão não segura" —
+> clique em **Avançado → Prosseguir**. A conexão é criptografada normalmente; o
+> aviso some depois. O acesso HTTP (porta 80) é redirecionado automaticamente
+> para HTTPS, e o Flask não fica mais exposto diretamente na porta 5000.
+
+**Credenciais padrão do login web:**
 - Usuário: `administrador`
-- Senha: `raspberry`
+- Senha: `sil123`
+
+> ℹ️ Esta é a senha da **interface web** (configurável via `ADMIN_PASSWORD` em
+> `/etc/default/raspberry-pi-manager`). Não confunda com a senha do **usuário do
+> sistema** `administrador` (padrão `raspberry`, usada para SSH).
 
 ⚠️ **ALTERE A SENHA IMEDIATAMENTE APÓS O PRIMEIRO LOGIN**
 
@@ -100,41 +110,44 @@ Acesse **Sistema** → **Hostname** para mudar o nome do seu Raspberry Pi (ex: `
 
 ---
 
-## Atualizações Automáticas via Webhook (Opcional)
+## Atualização Automática Semanal (recomendado para vários Pis)
 
-Se quiser que o Pi receba atualizações automaticamente quando você fizer push para GitHub:
+Cada Pi **verifica sozinho** se há uma nova versão no GitHub, **1× por semana, em
+um dia e horário aleatórios** (re-sorteados a cada semana). Se houver atualização,
+ele baixa, reinstala dependências no venv e reinicia o serviço. Se não houver,
+não faz nada.
 
-### 1. Configure o Webhook Secret
+Esse é o modelo **PULL**: o Pi *sai* falando com o GitHub, então:
+- ✅ **Não precisa saber o IP** de cada Pi nem abrir portas de entrada.
+- ✅ **Escala para qualquer quantidade** de Raspberries.
+- ✅ **Nada para configurar por Pi** — o instalador já ativa o verificador.
 
-```bash
-sudo nano /etc/default/raspberry-pi-manager
+### Como funciona (systemd timer)
+
+O instalador cria `raspberry-pi-manager-update.timer` com:
+
+```ini
+OnCalendar=weekly        # base semanal
+RandomizedDelaySec=7d    # + atraso aleatório de até 7 dias = dia aleatório da semana
+Persistent=true          # se o Pi estava desligado no dia sorteado, roda ao ligar
 ```
 
-Procure pela linha `WEBHOOK_SECRET=` e adicione o seu secret:
+### Comandos úteis
 
 ```bash
-WEBHOOK_SECRET=602d5122f688294d2155c7766df73588cd25c6333f056acc58e9f10c425dd17a
-SERVICE_NAME=raspberry-pi-manager
+# Ver quando será a próxima verificação (e o dia sorteado desta semana)
+systemctl list-timers 'raspberry-pi-manager-update*'
+
+# Forçar uma verificação/atualização agora (não espera o dia sorteado)
+sudo systemctl start raspberry-pi-manager-update.service
+
+# Ver o histórico de atualizações
+tail -f /home/administrador/raspberry-pi-manager/update_app.log
 ```
 
-Salve (Ctrl+O, Enter, Ctrl+X) e reinicie o serviço:
-
-```bash
-sudo systemctl restart raspberry-pi-manager
-```
-
-### 2. Configure GitHub Actions
-
-Adicione este secret ao seu repositório GitHub:
-
-1. Vá para **Settings** → **Secrets and variables** → **Actions**
-2. Clique em **New repository secret**
-3. Nome: `WEBHOOK_SECRET`
-4. Valor: Cole o mesmo secret do passo 1
-
-### 3. Ative o Workflow de Deploy
-
-O arquivo `.github/workflows/deploy.yml` já está configurado. A cada push para `main`, o Pi receberá a atualização automaticamente.
+> O script `update_app.sh` é executado pelo verificador semanal (como root). Ele só
+> atualiza quando o Pi está **atrás** do GitHub — comparando o commit local com o
+> remoto. É o único mecanismo de atualização (não há webhook/deploy via push).
 
 ---
 
@@ -201,25 +214,19 @@ Possíveis problemas:
 - Permissões incorretas → `sudo chown -R administrador:administrador /home/administrador/raspberry-pi-manager`
 - Porta 5000 em uso → mude em `src/app.py` e `systemd/raspberry-pi-manager.service`
 
-### Webhook não funciona
+### Atualização automática não funciona
 
-1. Verifique se `WEBHOOK_SECRET` está configurado:
+1. Veja se o timer está ativo e quando dispara:
    ```bash
-   cat /etc/default/raspberry-pi-manager | grep WEBHOOK_SECRET
+   systemctl list-timers 'raspberry-pi-manager-update*'
    ```
 
-2. Teste a assinatura manualmente:
+2. Force uma verificação agora (não espera o dia sorteado):
    ```bash
-   BODY='{"event":"deploy"}'
-   SECRET="seu-secret-aqui"
-   SIGNATURE=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | cut -d' ' -f2)
-   curl -v -X POST http://localhost:5000/webhook \
-     -H "X-Hub-Signature-256: sha256=$SIGNATURE" \
-     -H "Content-Type: application/json" \
-     -d "$BODY"
+   sudo systemctl start raspberry-pi-manager-update.service
    ```
 
-3. Verifique os logs do webhook em `update_app.log`:
+3. Verifique os logs da atualização:
    ```bash
    tail -f /home/administrador/raspberry-pi-manager/update_app.log
    ```
@@ -283,9 +290,14 @@ raspberry-pi-manager/
 ├── systemd/
 │   ├── raspberry-pi-manager.service    # Unit file do systemd
 │   └── raspberry-pi-manager.env.example # Exemplo de variáveis
+├── scripts/
+│   └── validate.sh            # Validação dos contratos (rodada pelo CI)
+├── .github/workflows/
+│   └── ci.yml                 # Valida os contratos em cada push/PR
 ├── install.sh                 # Script de instalação
 ├── update_app.sh              # Script de atualização automática
 ├── requirements.txt           # Dependências Python
+├── CLAUDE.md                  # Contratos e boas práticas de alteração
 └── README.md                  # Este arquivo
 ```
 
@@ -297,7 +309,8 @@ Edite `/etc/default/raspberry-pi-manager`:
 
 | Variável | Descrição | Padrão |
 |----------|-----------|--------|
-| `WEBHOOK_SECRET` | Secret para validar webhooks do GitHub | (vazio) |
+| `SECRET_KEY` | Chave de assinatura das sessões Flask (gere com `openssl rand -hex 32`) | (auto-gerada/persistida) |
+| `ADMIN_PASSWORD` | Senha do login da interface web | `sil123` |
 | `SERVICE_NAME` | Nome do serviço systemd | `raspberry-pi-manager` |
 | `DEBUG` | Modo debug Flask | `false` |
 | `FLASK_HOST` | Host para bind | `0.0.0.0` |
@@ -332,9 +345,9 @@ Acesse `http://localhost:5000` (sem autenticação em modo local).
 ## Segurança
 
 - **Sempre altere a senha padrão**
-- **Use HTTPS** em produção (configure nginx com Let's Encrypt)
+- **HTTPS já vem configurado** pelo instalador (nginx + certificado autoassinado). Se o Pi tiver um domínio público, troque por um certificado Let's Encrypt
 - **Restrinja acesso de rede** com firewall se exposto à internet
-- **Mantenha atualizado** via webhook ou manualmente
+- **Mantenha atualizado** via verificação semanal automática ou manualmente
 - **Backup de configurações** em `/home/administrador/raspberry-pi-manager/config/`
 
 ---
@@ -367,7 +380,7 @@ Desenvolvido por **@victorjoaonull** — https://github.com/victorjoaonull
 - ✅ Gerenciamento de rede (Ethernet/Wi-Fi)
 - ✅ Gerenciamento de sistema (hostname/senha)
 - ✅ Configuração de autostart com Chromium
-- ✅ Suporte a webhook para atualizações automáticas
+- ✅ Atualização automática semanal (modelo PULL, dia aleatório)
 - ✅ Sincronização de favoritos do navegador
 - ✅ Logo e background customizados
 - ✅ Instalador automático para Raspberry Pi
