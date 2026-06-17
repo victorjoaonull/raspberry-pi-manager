@@ -47,6 +47,16 @@
             font-family: monospace;
             font-size: 0.9rem;
         }
+
+        /* Campo de nome (mais estreito) ao lado da URL */
+        .url-item .name-input {
+            flex: 0 0 28%;
+            min-width: 90px;
+            font-family: inherit;
+        }
+        .url-item .url-input {
+            flex: 1;
+        }
         
         .url-item input:focus {
             outline: none;
@@ -295,6 +305,7 @@
                     <div class="info-box" style="margin-bottom: 0;">
                         <ul style="margin: 0; padding-left: 1.25rem;">
                             <li style="margin-bottom: 0.5rem;">As URLs abrem <strong>automaticamente</strong> na inicialização</li>
+                            <li style="margin-bottom: 0.5rem;">O <strong>nome</strong> (opcional) é usado como rótulo do favorito no Chromium</li>
                             <li style="margin-bottom: 0.5rem;">Máximo de <strong>10 URLs</strong></li>
                             <li style="margin-bottom: 0.5rem;">Chromium inicia em <strong>tela cheia</strong></li>
                             <li style="margin-bottom: 0;">Certificados inválidos são ignorados</li>
@@ -383,6 +394,7 @@
             urlItem.draggable = true;
             urlItem.innerHTML = `
                 <div class="drag-handle" draggable="true">⣿</div>
+                <input type="text" class="name-input" placeholder="Nome (opcional)" value="">
                 <input type="text" class="url-input" placeholder="https://exemplo.com ou 192.168.1.100:3000" value="">
                 <div style="display: flex; gap: 0.25rem;">
                     <button type="button" class="btn" onclick="addUrlField()" title="Adicionar" style="padding: 0.5rem 0.75rem;">+</button>
@@ -405,32 +417,37 @@
             urlItem.querySelector('.url-input').focus();
         }
         
-        function addUrlFieldWithValue(url) {
+        function addUrlFieldWithValue(url, name) {
             const container = document.getElementById('urls-container');
             const emptyState = document.getElementById('empty-state');
             const urlCount = container.getElementsByClassName('url-item').length;
-            
+
             if (urlCount >= maxUrls) return;
             if (emptyState) emptyState.style.display = 'none';
-            
+
+            const safeUrl = (url || '').replace(/"/g, '&quot;');
+            const safeName = (name || '').replace(/"/g, '&quot;');
+
             const urlItem = document.createElement('div');
             urlItem.className = 'url-item';
             urlItem.draggable = true;
             urlItem.innerHTML = `
                 <div class="drag-handle" draggable="true">⣿</div>
-                <input type="text" class="url-input" placeholder="URL" value="${url.replace(/"/g, '&quot;')}">
+                <input type="text" class="name-input" placeholder="Nome (opcional)" value="${safeName}">
+                <input type="text" class="url-input" placeholder="URL" value="${safeUrl}">
                 <div style="display: flex; gap: 0.25rem;">
                     <button type="button" class="btn" onclick="addUrlField()" style="padding: 0.5rem 0.75rem;">+</button>
                     <button type="button" class="btn btn-danger" onclick="removeUrlField(this)" style="padding: 0.5rem 0.75rem;">−</button>
                 </div>
             `;
-            
+
             urlItem.addEventListener('dragstart', handleDragStart);
             urlItem.addEventListener('dragover', handleDragOver);
             urlItem.addEventListener('drop', handleDrop);
             urlItem.addEventListener('dragend', handleDragEnd);
             urlItem.querySelector('.url-input').addEventListener('input', updatePreview);
-            
+            urlItem.querySelector('.name-input').addEventListener('input', updatePreview);
+
             container.appendChild(urlItem);
         }
         
@@ -529,38 +546,48 @@
                 `status-badge ${total > 0 ? 'active' : ''}`;
         }
         
+        function escapeHtml(s) {
+            return (s || '').replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[c]));
+        }
+
         function updatePreview() {
-            const inputs = document.getElementsByClassName('url-input');
-            const urls = [];
-            
-            for (let input of inputs) {
-                if (input.value.trim()) urls.push(input.value.trim());
+            const rows = document.getElementsByClassName('url-item');
+            const items = [];
+
+            for (let row of rows) {
+                const url = row.querySelector('.url-input').value.trim();
+                const name = row.querySelector('.name-input').value.trim();
+                if (url) items.push({ url, name });
             }
-            
+
             const previewDiv = document.getElementById('url-preview');
-            
-            if (urls.length === 0) {
+
+            if (items.length === 0) {
                 previewDiv.innerHTML = '<p style="color: #95a5a6; text-align: center;">Nenhuma URL para visualizar</p>';
                 return;
             }
-            
+
             let html = '';
-            urls.forEach((url, i) => {
+            items.forEach(({ url, name }) => {
                 let formatted = url;
                 if (!url.startsWith('http://') && !url.startsWith('https://')) {
                     formatted = 'http://' + url;
                 }
                 const valid = isValidUrl(url);
-                
+                const safeUrl = escapeHtml(formatted);
+                const label = name ? `<strong>${escapeHtml(name)}</strong> · ` : '';
+
                 html += `
                     <div class="preview-item">
                         <span style="margin-right: 0.5rem; color: ${valid ? '#27ae60' : '#e74c3c'};">${valid ? '✓' : '✗'}</span>
-                        <span class="preview-url" title="${valid ? 'Válida' : 'Inválida'}">${formatted}</span>
-                        <a href="${formatted}" target="_blank" style="margin-left: 0.5rem; color: #3498db; text-decoration: none;">↗</a>
+                        <span class="preview-url" title="${valid ? 'Válida' : 'Inválida'}">${label}${safeUrl}</span>
+                        <a href="${safeUrl}" target="_blank" style="margin-left: 0.5rem; color: #3498db; text-decoration: none;">↗</a>
                     </div>
                 `;
             });
-            
+
             previewDiv.innerHTML = html;
             updateStats();
         }
@@ -648,10 +675,15 @@
                     // Remove todas as URLs existentes
                     const urlItems = container.getElementsByClassName('url-item');
                     while (urlItems.length > 0) urlItems[0].remove();
-                    
-                    if (data.urls && data.urls.length > 0) {
+
+                    // Usa 'entries' (url+nome); cai para 'urls' por compatibilidade
+                    const list = (data.entries && data.entries.length)
+                        ? data.entries
+                        : (data.urls || []).map(u => ({ url: u, name: '' }));
+
+                    if (list.length > 0) {
                         if (emptyState) emptyState.style.display = 'none';
-                        data.urls.forEach(url => addUrlFieldWithValue(url));
+                        list.forEach(e => addUrlFieldWithValue(e.url, e.name));
                         showMessage('✅ URLs carregadas', 'success');
                     } else {
                         if (emptyState) emptyState.style.display = 'block';
@@ -664,35 +696,34 @@
         }
         
         function saveUrls() {
-            const inputs = document.getElementsByClassName('url-input');
-            const urls = [];
-            
-            for (let input of inputs) {
-                const val = input.value.trim();
-                if (val) urls.push(val);
+            const rows = document.getElementsByClassName('url-item');
+            const entries = [];
+
+            for (let row of rows) {
+                const url = row.querySelector('.url-input').value.trim();
+                const name = row.querySelector('.name-input').value.trim();
+                if (url) entries.push({ url: url, name: name });
             }
-            
-            // Validação
-            let hasInvalid = false;
-            for (let url of urls) {
-                if (!isValidUrl(url)) {
-                    showMessage('URL inválida: ' + url, 'error');
-                    hasInvalid = true;
+
+            // Validação das URLs
+            for (let e of entries) {
+                if (!isValidUrl(e.url)) {
+                    showMessage('URL inválida: ' + e.url, 'error');
                     return;
                 }
             }
-            
-            if (urls.length === 0) {
+
+            if (entries.length === 0) {
                 showMessage('Nenhuma URL para salvar', 'warning');
                 return;
             }
-            
+
             showMessage('💾 Salvando...', 'info');
-            
+
             fetch('/api/autostart/urls', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ urls: urls })
+                body: JSON.stringify({ entries: entries })
             })
             .then(r => r.json())
             .then(data => {

@@ -176,8 +176,11 @@ class ChromiumFavoritesManager:
         print(f"🔍 Perfis encontrados: {profiles}")
         return profiles
 
-    def sync_to_all_profiles(self, urls):
-        """Sincroniza bookmarks em todos os perfis encontrados"""
+    def sync_to_all_profiles(self, items):
+        """Sincroniza bookmarks em todos os perfis encontrados.
+
+        'items' pode conter strings (URL) ou dicts {'url','name'}.
+        """
         all_success = True
         messages = []
         profiles = self.find_all_profiles()
@@ -201,7 +204,7 @@ class ChromiumFavoritesManager:
                     all_success = False
 
             try:
-                bookmarks_data = self.create_bookmarks_structure(urls, "Sites Gerenciados")
+                bookmarks_data = self.create_bookmarks_structure(items, "Sites Gerenciados")
                 with open(profile_bookmarks, 'w', encoding='utf-8') as f:
                     json.dump(bookmarks_data, f, indent=2, ensure_ascii=False)
 
@@ -212,7 +215,7 @@ class ChromiumFavoritesManager:
                 except Exception as perm_error:
                     messages.append(f"⚠️ Aviso de permissões para {profile}: {perm_error}")
 
-                messages.append(f"✅ Perfil {profile}: Sincronizado com {len(urls)} URLs")
+                messages.append(f"✅ Perfil {profile}: Sincronizado com {len(items)} itens")
             except Exception as e:
                 messages.append(f"❌ Erro em {profile}: {e}")
                 all_success = False
@@ -282,30 +285,46 @@ class ChromiumFavoritesManager:
             print(f"❌ Erro ao carregar favoritos: {e}")
             return []
     
-    def create_bookmarks_structure(self, urls, folder_name="Sites Gerenciados"):
-        """Cria a estrutura JSON para os bookmarks - VERSÃO CORRIGIDA"""
+    def create_bookmarks_structure(self, items, folder_name="Sites Gerenciados"):
+        """Cria a estrutura JSON para os bookmarks.
+
+        Cada item pode ser uma string (URL) OU um dict {'url':..., 'name':...}.
+        Se um nome customizado for informado, ele é usado como nome do favorito;
+        caso contrário, o nome é derivado da URL (comportamento padrão).
+        """
         import uuid
         import time
-        
+
         # Timestamp atual
         timestamp = int(time.time() * 1000000)
-        
+
         # Cria os itens dos bookmarks
         children = []
-        for idx, url in enumerate(urls):
-            if not url or not url.strip():
+        for idx, item in enumerate(items):
+            # Aceita tanto string ('url') quanto dict ({'url','name'})
+            if isinstance(item, dict):
+                url = (item.get('url') or '').strip()
+                custom_name = (item.get('name') or '').strip()
+            else:
+                url = (item or '').strip()
+                custom_name = ''
+
+            if not url:
                 continue
-            
-            url = url.strip()
-            # Formata o nome baseado na URL
-            try:
-                parsed = urlparse(url)
-                if parsed.scheme and parsed.netloc:
-                    name = parsed.netloc.replace('www.', '')
-                else:
-                    name = url.replace('http://', '').replace('https://', '').split('/')[0]
-            except:
-                name = f"Site {idx + 1}"
+
+            if custom_name:
+                # Usa o nome definido pelo usuário
+                name = custom_name
+            else:
+                # Nome derivado da URL
+                try:
+                    parsed = urlparse(url)
+                    if parsed.scheme and parsed.netloc:
+                        name = parsed.netloc.replace('www.', '')
+                    else:
+                        name = url.replace('http://', '').replace('https://', '').split('/')[0]
+                except Exception:
+                    name = f"Site {idx + 1}"
             
             # Cria GUID no formato correto (32 caracteres com hífens)
             guid = str(uuid.uuid4())
@@ -383,48 +402,46 @@ class ChromiumFavoritesManager:
             "version": 1
         }
     
-    def update_favorites(self, urls, folder_name="Sites Gerenciados"):
-        """Atualiza os favoritos do Chromium com as URLs configuradas"""
+    def update_favorites(self, items, folder_name="Sites Gerenciados"):
+        """Atualiza os favoritos do Chromium com os itens configurados.
+
+        'items' pode conter strings (URL) ou dicts {'url','name'}. O nome
+        customizado, quando informado, é usado como nome do favorito.
+        """
         try:
-            print(f"🔄 Atualizando favoritos com {len(urls)} URLs...")
-            
+            # Normaliza para uma lista de dicts {'url','name'}, descartando vazios
+            normalized = []
+            for it in items:
+                if isinstance(it, dict):
+                    u = (it.get('url') or '').strip()
+                    n = (it.get('name') or '').strip()
+                else:
+                    u = (it or '').strip()
+                    n = ''
+                if u:
+                    normalized.append({'url': u, 'name': n})
+
+            print(f"🔄 Atualizando favoritos com {len(normalized)} itens...")
+
             # 1. Garante que o diretório existe
             self.bookmarks_file.parent.mkdir(parents=True, exist_ok=True)
-            
+
             # 2. Backup dos favoritos atuais
             self.backup_bookmarks()
-            
-            # 3. Carrega favoritos existentes (para preservar outros)
-            existing_favs = self.load_current_favorites()
-            print(f"📖 {len(existing_favs)} favoritos existentes encontrados")
-            
-            # 4. Preserva favoritos que não estão na pasta gerenciada
-            preserved_favs = []
-            for fav in existing_favs:
-                if fav.get('folder') != folder_name and fav.get('folder') != "Sites Gerenciados":
-                    preserved_favs.append(fav)
-            
-            print(f"💾 Preservando {len(preserved_favs)} favoritos não gerenciados")
-            
-            # 5. Cria nova estrutura combinando preservados + novos
-            all_urls = urls.copy()
-            combined_favs = preserved_favs + [
-                {'url': url, 'name': '', 'folder': folder_name} for url in urls
-            ]
-            
-            # 6. Cria estrutura completa
-            bookmarks_data = self.create_bookmarks_structure(all_urls, folder_name)
-            
-            # 7. Salva o arquivo
+
+            # 3. Cria a estrutura a partir dos itens (com nome customizado)
+            bookmarks_data = self.create_bookmarks_structure(normalized, folder_name)
+
+            # 4. Salva o arquivo
             with open(self.bookmarks_file, 'w', encoding='utf-8') as f:
                 json.dump(bookmarks_data, f, indent=2, ensure_ascii=False)
-            
-            # 8. Ajusta permissões
+
+            # 5. Ajusta permissões
             try:
                 uid, gid = self.get_user_ids()
                 os.chown(self.bookmarks_file, uid, gid)
                 os.chmod(self.bookmarks_file, 0o644)
-                
+
                 # Ajusta permissões do diretório também
                 for path in [self.bookmarks_file.parent, self.chromium_dir]:
                     if path.exists():
@@ -432,9 +449,9 @@ class ChromiumFavoritesManager:
                         os.chmod(path, 0o755)
             except Exception as perm_error:
                 print(f"⚠️ Aviso de permissões: {perm_error}")
-            
+
             print(f"✅ Favoritos atualizados com sucesso")
-            return True, f"Favoritos atualizados: {len(urls)} URLs adicionadas, {len(preserved_favs)} preservadas"
+            return True, f"Favoritos atualizados: {len(normalized)} itens"
             
         except Exception as e:
             print(f"❌ Erro ao atualizar favoritos: {e}")
@@ -442,20 +459,18 @@ class ChromiumFavoritesManager:
             traceback.print_exc()
             return False, f"Erro ao atualizar favoritos: {e}"
     
-    def sync_favorites_with_config(self, config_urls):
-        """Sincroniza favoritos com URLs da configuração"""
+    def sync_favorites_with_config(self, config_items):
+        """Sincroniza favoritos com os itens (URL + nome) da configuração."""
         try:
-            if not config_urls:
-                print("ℹ️ Nenhuma URL para sincronizar")
-                # Se não há URLs, apenas garante que a pasta gerenciada existe (vazia)
+            if not config_items:
+                print("ℹ️ Nenhum item para sincronizar")
+                # Se não há itens, apenas garante que a pasta gerenciada existe (vazia)
                 return self.update_favorites([], "Sites Gerenciados")
-            
-            # Garante que as URLs estão formatadas
-            formatted_urls = [url.strip() for url in config_urls if url.strip()]
-            print(f"🔄 Sincronizando {len(formatted_urls)} URLs...")
-            
-            # Atualiza favoritos
-            success, message = self.update_favorites(formatted_urls)
+
+            print(f"🔄 Sincronizando {len(config_items)} itens...")
+
+            # Atualiza favoritos (update_favorites normaliza strings/dicts)
+            success, message = self.update_favorites(config_items)
             
             if success:
                 print(f"✅ Favoritos sincronizados com sucesso")
@@ -519,24 +534,38 @@ def get_memory_usage():
         print(f"Erro ao obter uso de memória: {e}")
         return "N/A"
 
-def load_autostart_urls():
+def load_autostart_entries():
+    """Carrega as entradas do autostart como lista de {'url':..., 'name':...}.
+
+    Formato do arquivo (uma entrada por linha):
+        url               -> sem nome (nome derivado da URL)
+        url|Nome do site  -> com nome customizado
+    Linhas vazias e comentários (começando com '#') são ignorados.
+    """
+    entries = []
     try:
         if os.path.exists(AUTOSTART_CONFIG):
             with open(AUTOSTART_CONFIG, 'r') as f:
-                # Ignora linhas vazias e comentários (começando com '#')
-                urls = [
-                    line.strip()
-                    for line in f.readlines()
-                    if line.strip() and not line.strip().startswith('#')
-                ]
-                print(f"📋 URLs carregadas do autostart.conf: {urls}")
-                return urls
-        print("📭 Arquivo autostart.conf não encontrado ou vazio")
-        return []
-        
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    if '|' in line:
+                        url, name = line.split('|', 1)
+                        entries.append({'url': url.strip(), 'name': name.strip()})
+                    else:
+                        entries.append({'url': line, 'name': ''})
+            print(f"📋 Entradas carregadas do autostart.conf: {entries}")
+        else:
+            print("📭 Arquivo autostart.conf não encontrado ou vazio")
     except Exception as e:
-        print(f"Erro ao carregar URLs: {e}")
-        return []
+        print(f"Erro ao carregar entradas do autostart: {e}")
+    return entries
+
+
+def load_autostart_urls():
+    """Retorna apenas as URLs (sem nome) — usado para abrir o browser."""
+    return [e['url'] for e in load_autostart_entries() if e.get('url')]
 
 def is_valid_url_or_ip(url):
     url = url.strip()
@@ -590,17 +619,20 @@ def format_url(url):
 def sync_chromium_favorites():
     """Sincroniza os favoritos do Chromium com as URLs configuradas em TODOS os perfis"""
     try:
-        urls = load_autostart_urls()
-        if not urls:
+        entries = load_autostart_entries()
+        if not entries:
             add_event("ℹ️ Nenhuma URL configurada para sincronizar favoritos")
             return False, "Nenhuma URL configurada"
-        
-        # Formata URLs
-        formatted_urls = [format_url(url.strip()) for url in urls if url.strip()]
-        add_event(f"🔄 URLs para sincronizar: {formatted_urls}")
-        
+
+        # Formata URLs mantendo o nome customizado de cada uma
+        formatted = [
+            {'url': format_url(e['url'].strip()), 'name': e.get('name', '')}
+            for e in entries if e.get('url', '').strip()
+        ]
+        add_event(f"🔄 Itens para sincronizar: {[(e['name'] or e['url']) for e in formatted]}")
+
         # Sincroniza em TODOS os perfis
-        success, message = favorites_manager.sync_to_all_profiles(formatted_urls)
+        success, message = favorites_manager.sync_to_all_profiles(formatted)
         
         if success:
             add_event(f"✅ Favoritos sincronizados em todos os perfis")
@@ -1383,27 +1415,44 @@ def manage_autostart():
     
     if request.method == 'GET':
         try:
-            urls = load_autostart_urls()
-            return jsonify({'urls': urls})
+            entries = load_autostart_entries()
+            # 'entries' = [{url, name}]; 'urls' mantido para compatibilidade
+            return jsonify({'entries': entries, 'urls': [e['url'] for e in entries]})
         except Exception as e:
             return jsonify({'error': str(e)}), 500
-    
+
     elif request.method == 'POST':
-        data = request.json
-        urls = data.get('urls', [])
+        data = request.get_json(silent=True) or {}
+        # Aceita 'entries' [{url,name}] (novo) ou 'urls' [str] (compatível)
+        entries = data.get('entries')
+        if entries is None:
+            entries = [{'url': u, 'name': ''} for u in data.get('urls', [])]
         try:
-            # Valida URLs
-            for url in urls:
-                if url.strip() and not is_valid_url_or_ip(url.strip()):
+            # Normaliza e valida
+            clean = []
+            for e in entries:
+                if isinstance(e, dict):
+                    url = (e.get('url') or '').strip()
+                    name = (e.get('name') or '').strip()
+                else:
+                    url = str(e).strip()
+                    name = ''
+                if not url:
+                    continue
+                if not is_valid_url_or_ip(url):
                     return jsonify({'error': f'URL ou IP inválido: {url}'}), 400
-            
-            # Salva URLs
+                clean.append({'url': format_url(url), 'name': name})
+
+            # Salva no formato 'url' ou 'url|nome'
             with open(AUTOSTART_CONFIG, 'w') as f:
-                for url in urls:
-                    if url.strip():
-                        formatted_url = format_url(url.strip())
-                        f.write(formatted_url + '\n')
-            
+                for e in clean:
+                    if e['name']:
+                        # '|' e quebras de linha não podem aparecer no nome
+                        safe_name = e['name'].replace('|', ' ').replace('\n', ' ').replace('\r', ' ')
+                        f.write(f"{e['url']}|{safe_name}\n")
+                    else:
+                        f.write(e['url'] + '\n')
+
             # Sincroniza favoritos do Chromium
             success, message = sync_chromium_favorites()
             
@@ -1599,17 +1648,20 @@ def force_sync_favorites():
         return jsonify({'error': 'Não autenticado'}), 401
     
     try:
-        # 1. Carrega URLs
-        urls = load_autostart_urls()
-        
-        if not urls:
+        # 1. Carrega as entradas (URL + nome)
+        entries = load_autostart_entries()
+
+        if not entries:
             return jsonify({'success': True, 'message': 'Nenhuma URL para sincronizar'})
-        
-        # 2. Formata URLs
-        formatted_urls = [format_url(url.strip()) for url in urls if url.strip()]
-        
-        # 3. Atualiza diretamente (sem preservar)
-        success, message = favorites_manager.update_favorites(formatted_urls)
+
+        # 2. Formata URLs mantendo o nome customizado
+        formatted = [
+            {'url': format_url(e['url'].strip()), 'name': e.get('name', '')}
+            for e in entries if e.get('url', '').strip()
+        ]
+
+        # 3. Atualiza os favoritos
+        success, message = favorites_manager.update_favorites(formatted)
         
         if success:
             # 4. Força recarregamento no Chromium
@@ -1623,7 +1675,7 @@ def force_sync_favorites():
             return jsonify({
                 'success': True,
                 'message': f'Favoritos forçadamente sincronizados: {message}',
-                'urls_count': len(formatted_urls)
+                'urls_count': len(formatted)
             })
         else:
             return jsonify({'error': message}), 500
@@ -1883,12 +1935,15 @@ def startup_tasks():
     # Aguarda um pouco para garantir que o sistema está pronto
     time.sleep(2)
     
-    # Sincroniza favoritos
+    # Sincroniza favoritos (mantendo nomes customizados)
     print("🔄 Sincronizando favoritos do Chromium...")
-    urls = load_autostart_urls()
-    if urls:
-        formatted_urls = [format_url(url.strip()) for url in urls if url.strip()]
-        success, message = favorites_manager.sync_favorites_with_config(formatted_urls)
+    entries = load_autostart_entries()
+    if entries:
+        formatted = [
+            {'url': format_url(e['url'].strip()), 'name': e.get('name', '')}
+            for e in entries if e.get('url', '').strip()
+        ]
+        success, message = favorites_manager.sync_favorites_with_config(formatted)
         if success:
             print(f"✅ {message}")
         else:

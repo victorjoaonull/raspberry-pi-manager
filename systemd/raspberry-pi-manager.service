@@ -10,6 +10,10 @@ Group=administrador
 WorkingDirectory=/home/administrador/raspberry-pi-manager
 EnvironmentFile=/etc/default/raspberry-pi-manager
 ExecStart=/home/administrador/raspberry-pi-manager/venv/bin/python /home/administrador/raspberry-pi-manager/src/app.py
+# Ao parar o serviço (inclusive durante desligamento/reinício), encerra o kiosk
+# do Chromium de forma limpa: SIGTERM e, se persistir, SIGKILL.
+ExecStop=-/bin/bash -c 'pkill -TERM -f chromium 2>/dev/null; sleep 2; pkill -KILL -f chromium 2>/dev/null; true'
+TimeoutStopSec=15
 Restart=always
 RestartSec=5
 StandardOutput=journal

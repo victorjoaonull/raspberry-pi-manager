@@ -373,6 +373,11 @@ Group=administrador
 WorkingDirectory=$INSTALL_DIR
 EnvironmentFile=/etc/default/${SERVICE_NAME}
 ExecStart=$INSTALL_DIR/venv/bin/python $INSTALL_DIR/src/app.py
+# Ao parar o serviço (inclusive durante desligamento/reinício do sistema),
+# encerra o kiosk do Chromium de forma limpa: SIGTERM e, se persistir, SIGKILL.
+# Evita o aviso "o Chrome não foi encerrado corretamente" no próximo boot.
+ExecStop=-/bin/bash -c 'pkill -TERM -f chromium 2>/dev/null; sleep 2; pkill -KILL -f chromium 2>/dev/null; true'
+TimeoutStopSec=15
 Restart=always
 RestartSec=5
 StandardOutput=journal
