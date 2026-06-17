@@ -371,6 +371,23 @@ Acesse `http://localhost:5000` (sem autenticação em modo local).
 - **Mantenha atualizado** via verificação semanal automática ou manualmente
 - **Backup de configurações** em `/home/administrador/raspberry-pi-manager/config/`
 
+### WiFi gerenciável apenas pelo painel
+
+O instalador aplica uma **regra polkit** que restringe o gerenciamento do
+NetworkManager **somente ao serviço** (que age como root via wrapper). A sessão
+gráfica ou um `nmcli` sem `sudo` ficam **bloqueados** de **desconectar ou trocar
+de rede** — útil para impedir que usuários cliquem no ícone de WiFi do sistema e
+saiam da rede correta.
+
+Por padrão, o Pi **mantém a conexão WiFi atual** (a rede em que ele subiu) — o
+acesso continua normal, só o **gerenciamento** fica travado para não-root. Quem
+precisa trocar de rede usa o **painel** (tela **Rede**).
+
+> Opcional: para deixar o **rádio WiFi desligado por padrão** (Pi sem WiFi até
+> liberar pelo app), instale com `PI_MANAGER_WIFI_DEFAULT=blocked`. Há uma trava
+> que evita desligar se o WiFi for o único acesso ativo (use `PI_MANAGER_WIFI_FORCE=yes`
+> para forçar).
+
 ---
 
 ## Suporte e Contribuições

@@ -74,6 +74,17 @@ wrappers `pi-manager-*`, sudoers, nginx, env, dados), lista, **pede confirmaçã
 e faz **purge total**. NUNCA remover diretórios cegamente por nome (apagaria o
 próprio repo). Novo artefato criado pela instalação → adicione à detecção.
 
+### C11 — WiFi/rede gerenciáveis apenas pelo serviço
+Uma regra polkit (`/etc/polkit-1/rules.d/49-pi-manager-nm.rules`, criada pelo
+`install.sh`) NEGA as ações `org.freedesktop.NetworkManager.*` para usuários
+não-root. O app funciona porque chama `nmcli` como root (via wrapper
+`pi-manager-nmcli`). **Padrão (`PI_MANAGER_WIFI_DEFAULT=keep`)**: mantém a conexão
+atual e apenas bloqueia o gerenciamento por não-root (impede desconectar/trocar
+de rede pelo ícone do sistema). Opcional `=blocked`: desliga o rádio por padrão
+(com trava se o WiFi for o único uplink). O app controla o rádio via
+`/api/network/wifi/radio`. Toda gerência de rede deve continuar passando pelo
+wrapper (root) — nunca por chamadas não-root.
+
 ### C7 — `install.sh` gera o service; o `systemd/*.service` é referência
 O instalador escreve seu próprio unit file. Se editar um, reflita no outro
 (ExecStart, EnvironmentFile, ReadWritePaths) para não divergirem.

@@ -129,6 +129,18 @@ else
     pass "sem remoção cega de diretórios (não apaga o próprio repo)"
 fi
 
+# --- C11: WiFi gerenciável só pelo serviço (polkit; conexão atual mantida) -----
+echo "[C11] WiFi gerenciável só pelo serviço"
+grep -q '49-pi-manager-nm.rules' "$INSTALL" \
+    && pass "install.sh aplica regra polkit (gerência de rede só por root/serviço)" \
+    || fail "install.sh NÃO aplica a regra polkit de hardening de rede"
+grep -q 'PI_MANAGER_WIFI_DEFAULT:-keep' "$INSTALL" \
+    && pass "install.sh mantém a conexão atual por padrão (não desliga o rádio)" \
+    || fail "install.sh não mantém a conexão atual por padrão (deveria ser keep)"
+grep -q "/api/network/wifi/radio" "$APP" \
+    && pass "app.py expõe endpoint de bloquear/liberar WiFi" \
+    || fail "app.py sem endpoint de controle do rádio WiFi"
+
 # --- C8: README presente e com seções mínimas --------------------------------
 echo "[C8] README coerente"
 [ -f "$README" ] && pass "README.md existe" || fail "README.md ausente"

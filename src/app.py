@@ -1301,6 +1301,39 @@ def scan_wifi():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/network/wifi/radio', methods=['GET', 'POST'])
+def wifi_radio():
+    """Lê e controla o rádio WiFi (bloquear/liberar).
+
+    O WiFi é gerenciável APENAS pelo serviço: a regra polkit nega o controle do
+    NetworkManager a usuários não-root, e o app age como root (via wrapper sudo).
+    GET  -> {'enabled': bool}
+    POST {'enabled': true|false} -> liga/desliga o rádio (nmcli radio wifi on/off)
+    """
+    if not check_auth():
+        return jsonify({'error': 'Não autenticado'}), 401
+    try:
+        if request.method == 'GET':
+            res = run_nmcli(['-t', 'radio', 'wifi'])
+            state = (res.stdout or '').strip()
+            return jsonify({'success': True, 'enabled': state == 'enabled', 'state': state})
+
+        data = request.get_json(silent=True) or {}
+        enabled = bool(data.get('enabled'))
+        action = 'on' if enabled else 'off'
+        res = run_nmcli(['radio', 'wifi', action])
+        if res.returncode != 0:
+            stderr = (res.stderr or '').strip()
+            return jsonify({'error': f'nmcli error: {stderr}'}), 500
+        add_event(f"📶 WiFi {'liberado' if enabled else 'bloqueado'} pelo app")
+        return jsonify({
+            'success': True,
+            'enabled': enabled,
+            'message': 'WiFi liberado' if enabled else 'WiFi bloqueado'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/network/configure', methods=['POST'])
 def configure_network():
     if not check_auth():

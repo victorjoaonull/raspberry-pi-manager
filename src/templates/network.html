@@ -381,6 +381,22 @@
             </div>
         </div>
 
+        <!-- Controle do WiFi (bloquear/liberar) -->
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                <div>
+                    <h2 style="margin: 0;">📶 Controle do WiFi</h2>
+                    <p style="margin: 0.35rem 0 0; color: #7f8c8d; font-size: 0.9rem;">
+                        Estado: <strong id="wifi-radio-state">verificando…</strong>
+                    </p>
+                </div>
+                <button id="wifi-radio-btn" onclick="toggleWifiRadio()" class="btn" style="min-width: 160px;">…</button>
+            </div>
+            <p style="margin: 0.75rem 0 0; color: #95a5a6; font-size: 0.82rem;">
+                🔒 O WiFi é gerenciável apenas por este painel e fica <strong>bloqueado por padrão</strong>.
+            </p>
+        </div>
+
         <!-- Conexões Unificadas -->
         <div class="card">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
@@ -980,6 +996,60 @@
         function refreshAll() {
             loadNetworkStatus();
             loadConnections();
+            loadWifiRadio();
+        }
+
+        // ===== CONTROLE DO RÁDIO WIFI (bloquear/liberar) =====
+        function loadWifiRadio() {
+            fetch('/api/network/wifi/radio')
+                .then(r => r.json())
+                .then(data => {
+                    const st = document.getElementById('wifi-radio-state');
+                    const btn = document.getElementById('wifi-radio-btn');
+                    if (!st || !btn) return;
+                    if (!data.success) { st.textContent = 'desconhecido'; return; }
+                    if (data.enabled) {
+                        st.textContent = 'Liberado'; st.style.color = '#27ae60';
+                        btn.textContent = '🔒 Bloquear WiFi'; btn.style.background = '#e74c3c';
+                        btn.dataset.enabled = '1';
+                    } else {
+                        st.textContent = 'Bloqueado'; st.style.color = '#e74c3c';
+                        btn.textContent = '🔓 Liberar WiFi'; btn.style.background = '#27ae60';
+                        btn.dataset.enabled = '0';
+                    }
+                })
+                .catch(() => {
+                    const st = document.getElementById('wifi-radio-state');
+                    if (st) st.textContent = 'erro';
+                });
+        }
+
+        function toggleWifiRadio() {
+            const btn = document.getElementById('wifi-radio-btn');
+            const currentlyEnabled = btn.dataset.enabled === '1';
+            const target = !currentlyEnabled;  // liberado -> bloquear; bloqueado -> liberar
+            const msg = target
+                ? 'Liberar o WiFi?'
+                : 'Bloquear o WiFi? As conexões WiFi ativas vão cair.';
+            if (!confirm(msg)) return;
+            btn.disabled = true;
+            fetch('/api/network/wifi/radio', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: target })
+            })
+            .then(r => r.json())
+            .then(data => {
+                btn.disabled = false;
+                if (data.success) {
+                    showMessage(data.message || 'OK', 'success');
+                    loadWifiRadio();
+                    loadConnections();
+                } else {
+                    showMessage('Erro: ' + (data.error || ''), 'error');
+                }
+            })
+            .catch(err => { btn.disabled = false; showMessage('Erro: ' + err, 'error'); });
         }
 
         function showMessage(message, type) {
@@ -1001,6 +1071,7 @@
         document.addEventListener('DOMContentLoaded', function() {
             loadNetworkStatus();
             loadConnections();
+            loadWifiRadio();
         });
 
         // Fechar modal ao clicar fora

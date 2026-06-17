@@ -424,6 +424,29 @@ if ! visudo -cf /etc/sudoers.d/pi-manager >/dev/null 2>&1; then
     exit 1
 fi
 
+# ========== HARDENING DO WIFI: GERÊNCIA SÓ PELO SERVIÇO (POLKIT) ==========
+echo -e "${BLUE}[--]${NC} Restringindo o gerenciamento do WiFi/NetworkManager ao serviço..."
+# Regra polkit: apenas root (o serviço, via wrapper 'sudo nmcli') pode gerenciar o
+# NetworkManager. Qualquer outro usuário (sessão gráfica, terminal não-root) é
+# NEGADO. O app continua funcionando porque o wrapper roda nmcli como root.
+cat > /etc/polkit-1/rules.d/49-pi-manager-nm.rules << 'EOF'
+// raspberry-pi-manager: WiFi/rede gerenciáveis APENAS pelo serviço (root).
+// Nega ações do NetworkManager para usuários não-root (sessão gráfica/terminal).
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.NetworkManager.") === 0) {
+        if (subject.user === "root") {
+            return polkit.Result.YES;
+        }
+        return polkit.Result.NO;
+    }
+});
+EOF
+chown root:root /etc/polkit-1/rules.d/49-pi-manager-nm.rules
+chmod 644 /etc/polkit-1/rules.d/49-pi-manager-nm.rules
+# O polkit recarrega rules.d automaticamente; um restart garante aplicação imediata.
+systemctl restart polkit 2>/dev/null || true
+echo "✅ Gerenciamento de rede restrito ao serviço (regra polkit aplicada)."
+
 # ========== CRIAR ARQUIVO DE AMBIENTE ==========
 echo -e "${BLUE}[11/12]${NC} Criando arquivo de variáveis de ambiente..."
 ENV_FILE="/etc/default/${SERVICE_NAME}"
@@ -657,6 +680,33 @@ chown administrador:administrador "$USER_DESKTOP_DIR/Chromium-Raspberry.desktop"
 chown administrador:administrador "$USER_AUTOSTART_DIR/Chromium-Raspberry.desktop" || true
 chmod 755 "$USER_DESKTOP_DIR/Chromium-Raspberry.desktop" || true
 chmod 644 "$USER_AUTOSTART_DIR/Chromium-Raspberry.desktop" || true
+
+# ========== POLÍTICA DO WIFI ==========
+# Padrão (recomendado): MANTÉM a conexão WiFi atual (a rede em que o Pi subiu
+# acessando) e apenas BLOQUEIA o GERENCIAMENTO por não-root (regra polkit acima).
+# Ou seja: ninguém desconecta nem troca de rede pelo ícone do sistema; só o app
+# (root) gerencia. O acesso à rede atual permanece normal.
+#
+# Opcional: PI_MANAGER_WIFI_DEFAULT=blocked desliga o rádio por padrão (com trava
+# de segurança se o WiFi for o único acesso). Use só se quiser o Pi sem WiFi até
+# liberar pelo app.
+echo -e "${BLUE}[--]${NC} Definindo política do WiFi..."
+WIFI_DEFAULT="${PI_MANAGER_WIFI_DEFAULT:-keep}"
+if [ "$WIFI_DEFAULT" = "blocked" ]; then
+    eth_up=false; wifi_up=false
+    nmcli -t -f TYPE,STATE device status 2>/dev/null | grep -q '^ethernet:connected' && eth_up=true
+    nmcli -t -f TYPE,STATE device status 2>/dev/null | grep -q '^wifi:connected' && wifi_up=true
+    if [ "$wifi_up" = true ] && [ "$eth_up" != true ] && [ "${PI_MANAGER_WIFI_FORCE:-no}" != "yes" ]; then
+        echo -e "${YELLOW}⚠️  WiFi é o ÚNICO acesso ativo; NÃO vou desligar (evita perder a conexão).${NC}"
+        echo -e "${YELLOW}    Conecte um cabo e desligue pelo app, ou rode com PI_MANAGER_WIFI_FORCE=yes.${NC}"
+    else
+        nmcli radio wifi off 2>/dev/null || true
+        echo -e "${GREEN}✅ Rádio WiFi desligado por padrão — ligue pelo app (tela Rede).${NC}"
+    fi
+else
+    echo -e "${GREEN}✅ WiFi mantém a conexão atual; gerenciamento bloqueado para não-root.${NC}"
+    echo -e "${GREEN}   Ninguém desconecta nem troca de rede pelo sistema — só o app gerencia.${NC}"
+fi
 
 # ========== INSTALAÇÃO CONCLUÍDA ==========
 echo ""
