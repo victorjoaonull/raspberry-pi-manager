@@ -82,8 +82,11 @@ NMCLI_WRAPPER = '/usr/local/bin/pi-manager-nmcli'
 CHPASS_WRAPPER = '/usr/local/bin/pi-manager-chpasswd'
 HOSTNAME_WRAPPER = '/usr/local/bin/pi-manager-hostname'
 
-def run_nmcli(args, capture_output=True, text=True, timeout=None):
-    """Executa nmcli via wrapper seguro, com fallback para nmcli puro se necessário."""
+def run_nmcli(args, capture_output=True, text=True, timeout=30):
+    """Executa nmcli via wrapper seguro, com fallback para nmcli puro se necessário.
+
+    timeout padrão de 30s: evita que um nmcli travado segure a thread da
+    requisição indefinidamente (levanta subprocess.TimeoutExpired)."""
     # cmd via wrapper (sudoers permite execução sem senha do wrapper)
     cmd = ['sudo', NMCLI_WRAPPER] + args
     try:
@@ -494,20 +497,30 @@ def check_auth():
     # NÃO logar o conteúdo da sessão aqui (vaza cookies/sessão nos logs).
     return session.get('authenticated')
 
-def get_cpu_usage():
-    try:
-        with open('/proc/stat', 'r') as f:
-            lines = f.readlines()
-        for line in lines:
+def _read_cpu_times():
+    """Lê (total, idle) acumulados da linha 'cpu ' do /proc/stat."""
+    with open('/proc/stat', 'r') as f:
+        for line in f:
             if line.startswith('cpu '):
-                parts = line.split()
-                user = int(parts[1]); nice = int(parts[2]); system = int(parts[3])
-                idle = int(parts[4]); iowait = int(parts[5]); irq = int(parts[6]); softirq = int(parts[7])
-                total = user + nice + system + idle + iowait + irq + softirq
-                used = total - idle
-                if total > 0:
-                    usage_percent = (used / total) * 100
-                    return f"{usage_percent:.1f}%"
+                vals = [int(x) for x in line.split()[1:8]]  # user,nice,system,idle,iowait,irq,softirq
+                idle = vals[3] + vals[4]  # idle + iowait
+                return sum(vals), idle
+    return None, None
+
+def get_cpu_usage():
+    """Uso de CPU INSTANTÂNEO: duas amostras com intervalo curto e o delta entre
+    elas (a versão antiga lia uma vez só e mostrava a média desde o boot)."""
+    try:
+        t1, i1 = _read_cpu_times()
+        time.sleep(0.3)
+        t2, i2 = _read_cpu_times()
+        if t1 is None or t2 is None:
+            return "N/A"
+        dt = t2 - t1
+        di = i2 - i1
+        if dt > 0:
+            usage_percent = (1.0 - di / dt) * 100.0
+            return f"{max(0.0, min(100.0, usage_percent)):.1f}%"
         return "N/A"
     except Exception as e:
         print(f"Erro ao obter uso de CPU: {e}")
@@ -909,6 +922,108 @@ def get_system_events():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/system/hardware')
+def get_system_hardware():
+    """Lista as conexões FÍSICAS do Pi: displays (HDMI), dispositivos USB,
+    link físico de rede e armazenamento USB. Tudo lido sem privilégios."""
+    if not check_auth():
+        return jsonify({'error': 'Não autenticado'}), 401
+    import glob as _glob
+
+    def _read(path):
+        try:
+            with open(path) as fh:
+                return fh.read().strip()
+        except Exception:
+            return None
+
+    try:
+        # --- Displays (HDMI via DRM sysfs) ---
+        displays = []
+        for d in sorted(_glob.glob('/sys/class/drm/card*-HDMI-*')):
+            status = _read(os.path.join(d, 'status'))
+            if status is None:
+                continue
+            base = os.path.basename(d)
+            port = base.split('-', 1)[1] if '-' in base else base
+            resolution = None
+            if status == 'connected':
+                modes = _read(os.path.join(d, 'modes'))
+                if modes:
+                    resolution = modes.splitlines()[0].strip()
+            displays.append({
+                'port': port,
+                'connected': status == 'connected',
+                'resolution': resolution
+            })
+
+        # --- USB (lsusb, ignorando os root hubs internos) ---
+        usb = []
+        try:
+            out = subprocess.check_output(['lsusb'], text=True, timeout=5)
+            for line in out.splitlines():
+                m = re.search(r'ID\s+([0-9a-fA-F]{4}:[0-9a-fA-F]{4})\s+(.*)$', line)
+                if not m:
+                    continue
+                name = m.group(2).strip()
+                if 'root hub' in name.lower():
+                    continue
+                usb.append({'id': m.group(1), 'name': name})
+        except Exception:
+            pass
+
+        # --- Link físico de rede ---
+        network = []
+        for i in sorted(_glob.glob('/sys/class/net/*')):
+            ifc = os.path.basename(i)
+            if ifc == 'lo':
+                continue
+            operstate = _read(os.path.join(i, 'operstate'))
+            carrier = _read(os.path.join(i, 'carrier'))
+            speed = _read(os.path.join(i, 'speed'))
+            if ifc.startswith(('wlan', 'wlx')):
+                itype = 'wifi'
+            elif ifc.startswith(('eth', 'en')):
+                itype = 'ethernet'
+            else:
+                itype = 'outro'
+            network.append({
+                'iface': ifc,
+                'type': itype,
+                'up': operstate == 'up',
+                'carrier': carrier == '1',
+                'speed': speed if (speed and speed != '-1') else None
+            })
+
+        # --- Armazenamento USB ---
+        storage = []
+        try:
+            out = subprocess.check_output(
+                ['lsblk', '-P', '-o', 'NAME,SIZE,TYPE,MOUNTPOINT,TRAN'],
+                text=True, timeout=5)
+            for line in out.splitlines():
+                fields = dict(re.findall(r'(\w+)="([^"]*)"', line))
+                if fields.get('TRAN') == 'usb':
+                    storage.append({
+                        'name': fields.get('NAME'),
+                        'size': fields.get('SIZE'),
+                        'type': fields.get('TYPE'),
+                        'mount': fields.get('MOUNTPOINT') or None
+                    })
+        except Exception:
+            pass
+
+        return jsonify({
+            'success': True,
+            'displays': displays,
+            'usb': usb,
+            'network': network,
+            'storage': storage
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/network/connection/<name>', methods=['GET'])
 def get_connection_detail(name):
     if not check_auth():
@@ -1068,7 +1183,7 @@ def change_hostname():
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
     
-    data = request.json
+    data = request.get_json(silent=True) or {}
     new_hostname = data.get('hostname')
     
     try:
@@ -1137,11 +1252,11 @@ def change_hostname():
 def change_password():
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
-    data = request.json
+    data = request.get_json(silent=True) or {}
     new_password = data.get('password')
     try:
-        if not new_password or len(new_password) < 3:
-            return jsonify({'error': 'Senha deve ter pelo menos 3 caracteres'}), 400
+        if not new_password or len(new_password) < 6:
+            return jsonify({'error': 'Senha deve ter pelo menos 6 caracteres'}), 400
         result = run_chpasswd('administrador', new_password)
         if result.returncode == 0:
             return jsonify({'success': True, 'message': 'Senha alterada com sucesso'})
@@ -1338,11 +1453,15 @@ def wifi_radio():
 def configure_network():
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
-    data = request.json
+    data = request.get_json(silent=True) or {}
     connection_type = data.get('type')
     connection_name = data.get('name')
     ip_type = data.get('ip_type', 'dhcp')
-    
+
+    # Validação: nome da conexão é obrigatório para qualquer operação
+    if not connection_name or not str(connection_name).strip():
+        return jsonify({'error': 'Nome da conexão é obrigatório'}), 400
+
     try:
         # Handle toggle (ativar/desativar)
         if connection_type == 'toggle':
@@ -1642,7 +1761,7 @@ def set_chromium_profile():
     if not check_auth():
         return jsonify({'error': 'Não autenticado'}), 401
     
-    data = request.json
+    data = request.get_json(silent=True) or {}
     profile_name = data.get('profile')
     
     if not profile_name:
@@ -1716,31 +1835,8 @@ def force_sync_favorites():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
         
-@app.route('/api/favorites/test', methods=['GET'])
-def test_favorites():
-    """Testa a funcionalidade de favoritos"""
-    if not check_auth():
-        return jsonify({'error': 'Não autenticado'}), 401
-    
-    try:
-        # Testa com URLs de exemplo
-        test_urls = [
-            'https://www.google.com',
-            'https://github.com',
-            'http://localhost:5000'
-        ]
-        
-        print(f"🧪 Testando com {len(test_urls)} URLs...")
-        success, message = favorites_manager.update_favorites(test_urls, "TESTE")
-        
-        return jsonify({
-            'success': success,
-            'message': message,
-            'test_urls': test_urls
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+# (Removido) /api/favorites/test: gravava URLs de teste por cima dos favoritos
+# reais do usuário — risco de perda de dados. Removido por segurança.
 
 # ========== LOGO APÓS /api/system/events, ADICIONE ISSO ==========
 
@@ -1989,8 +2085,14 @@ def startup_tasks():
     browser_thread.daemon = True
     browser_thread.start()
 
-with app.app_context():
-    startup_tasks()
+def _run_startup():
+    with app.app_context():
+        startup_tasks()
+
+# Executa o startup em BACKGROUND para não atrasar o bind da porta:
+# startup_tasks() tem sleeps (~5s) + sincronização; rodando em thread, o app
+# começa a responder imediatamente e o resto acontece em paralelo.
+threading.Thread(target=_run_startup, daemon=True).start()
 
 
 @app.route('/about')

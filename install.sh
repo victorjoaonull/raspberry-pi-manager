@@ -655,12 +655,15 @@ if [ "$CLONE_FROM_GITHUB" != "true" ] && ! [ -d "$INSTALL_DIR/.git" ]; then
     echo "✅ Git inicializado; execute 'git pull origin main' para sincronizar com o GitHub"
 fi
 
-# Criar atalho .desktop "Chromium-Raspberry" no Desktop do usuário e em autostart
-echo -e "${BLUE}⚙️  Criando atalho Chromium-Raspberry...${NC}"
+# Atalho manual "Chromium-Raspberry" no Desktop do usuário.
+# IMPORTANTE: NÃO criamos mais o autostart .desktop. O Chromium é aberto no boot
+# por UM ÚNICO lançador — a própria aplicação (open_browser_with_urls), que antes
+# limpa locks e sincroniza favoritos. Ter os dois (autostart + app) causava DUAS
+# instâncias do Chromium competindo pelo mesmo perfil (conflito de lock).
+echo -e "${BLUE}⚙️  Criando atalho manual Chromium-Raspberry...${NC}"
 USER_DESKTOP_DIR="/home/administrador/Desktop"
 USER_AUTOSTART_DIR="/home/administrador/.config/autostart"
 mkdir -p "$USER_DESKTOP_DIR"
-mkdir -p "$USER_AUTOSTART_DIR"
 
 # Detecta binário do Chromium
 if [ -x "/usr/bin/chromium" ]; then
@@ -674,12 +677,13 @@ fi
 DESKTOP_FILE_CONTENT="[Desktop Entry]\nName=Chromium-Raspberry\nComment=Chromium custom profile for Raspberry PI Manager\nExec=$CHROMIUM_BIN --user-data-dir=/home/administrador/chromium-profile --no-first-run --start-maximized --ignore-certificate-errors --noerrdialogs --disable-session-crashed-bubble %U\nTerminal=false\nType=Application\nCategories=Network;WebBrowser;\nStartupNotify=false\n"
 
 echo -e "$DESKTOP_FILE_CONTENT" > "$USER_DESKTOP_DIR/Chromium-Raspberry.desktop"
-echo -e "[Desktop Entry]\nName=Chromium-Raspberry\nComment=Autostart Chromium custom profile for Raspberry PI Manager\nExec=$CHROMIUM_BIN --user-data-dir=/home/administrador/chromium-profile --no-first-run --start-maximized --ignore-certificate-errors --noerrdialogs --disable-session-crashed-bubble\nTerminal=false\nType=Application\nX-GNOME-Autostart-enabled=true\nStartupNotify=false\n" > "$USER_AUTOSTART_DIR/Chromium-Raspberry.desktop"
+
+# Remove um autostart .desktop de instalações antigas (se existir) para garantir
+# que não haja lançamento duplicado.
+rm -f "$USER_AUTOSTART_DIR/Chromium-Raspberry.desktop" 2>/dev/null || true
 
 chown administrador:administrador "$USER_DESKTOP_DIR/Chromium-Raspberry.desktop" || true
-chown administrador:administrador "$USER_AUTOSTART_DIR/Chromium-Raspberry.desktop" || true
 chmod 755 "$USER_DESKTOP_DIR/Chromium-Raspberry.desktop" || true
-chmod 644 "$USER_AUTOSTART_DIR/Chromium-Raspberry.desktop" || true
 
 # ========== POLÍTICA DO WIFI ==========
 # Padrão (recomendado): MANTÉM a conexão WiFi atual (a rede em que o Pi subiu

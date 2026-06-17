@@ -257,7 +257,18 @@
                 </div>
             </div>
         </div>
-        
+
+        <!-- Portas & Periféricos (conexões físicas) -->
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h2>🔌 Portas &amp; Periféricos</h2>
+                <button onclick="loadHardware()" class="btn refresh-btn">🔄 Atualizar</button>
+            </div>
+            <div id="hardware-info">
+                <p class="loading">Carregando conexões físicas<span class="loading-dots"></span></p>
+            </div>
+        </div>
+
         <!-- Configurações -->
         <div class="section-title">⚙️ Configurações</div>
         <div class="settings-grid">
@@ -446,6 +457,57 @@
             }
         })
         .catch(error => showMessage(msg, '❌ Erro: ' + error, 'error'));
+}
+
+// ===== PORTAS & PERIFÉRICOS (conexões físicas) =====
+function loadHardware() {
+    const el = document.getElementById('hardware-info');
+    if (!el) return;
+    const esc = s => (s || '').toString().replace(/[&<>"]/g, c => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    fetch('/api/system/hardware')
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) { el.innerHTML = '<p style="color:#e74c3c;">Erro ao carregar.</p>'; return; }
+            let html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:1rem;">';
+
+            html += '<div><h4>🖥️ Displays (HDMI)</h4>';
+            if ((data.displays || []).length) {
+                data.displays.forEach(d => {
+                    const info = d.connected ? (d.resolution || 'conectado') : 'desconectado';
+                    html += `<div>${d.connected ? '🟢' : '⚪'} <strong>${esc(d.port)}</strong> — ${esc(info)}</div>`;
+                });
+            } else { html += '<div style="color:#95a5a6;">—</div>'; }
+            html += '</div>';
+
+            html += '<div><h4>🔌 USB</h4>';
+            if ((data.usb || []).length) {
+                data.usb.forEach(u => {
+                    html += `<div>• ${esc(u.name)} <span style="color:#95a5a6;">(${esc(u.id)})</span></div>`;
+                });
+            } else { html += '<div style="color:#95a5a6;">Nenhum dispositivo</div>'; }
+            html += '</div>';
+
+            html += '<div><h4>🌐 Rede (link físico)</h4>';
+            (data.network || []).forEach(n => {
+                const t = n.type === 'wifi' ? 'WiFi' : (n.type === 'ethernet' ? 'Ethernet' : esc(n.type));
+                const sp = n.speed ? ` · ${esc(n.speed)}Mbps` : '';
+                html += `<div>${n.carrier ? '🟢' : '⚪'} <strong>${esc(n.iface)}</strong> (${t}) — ${n.carrier ? 'conectado' : 'sem link'}${sp}</div>`;
+            });
+            html += '</div>';
+
+            if ((data.storage || []).length) {
+                html += '<div><h4>💾 Armazenamento USB</h4>';
+                data.storage.forEach(s => {
+                    html += `<div>• ${esc(s.name)} ${esc(s.size || '')}${s.mount ? ' → ' + esc(s.mount) : ''}</div>`;
+                });
+                html += '</div>';
+            }
+
+            html += '</div>';
+            el.innerHTML = html;
+        })
+        .catch(() => { el.innerHTML = '<p style="color:#e74c3c;">Erro ao carregar.</p>'; });
 }
 
 // Função showMessage (se não existir)
@@ -658,7 +720,8 @@ function showMessage(element, message, type) {
         // Inicializar
         document.addEventListener('DOMContentLoaded', function() {
             loadSystemInfo();
-            
+            loadHardware();
+
             // Tecla Enter nos formulários
             document.getElementById('new-hostname').addEventListener('keypress', e => {
                 if (e.key === 'Enter') changeHostname();
