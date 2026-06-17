@@ -67,6 +67,13 @@ que é `raspberry` (definida no `install.sh` via `chpasswd`, usada para SSH).
 Porta padrão: `5000`. Se mudar qualquer um destes, atualize **no mesmo commit**:
 `app.py`, `install.sh` (env template) e `README.md`.
 
+### C10 — `install.sh` remove versões antigas antes de instalar
+`detect_and_purge_old()` detecta artefatos de **qualquer** versão anterior
+(units por nome `*pi-manager*` E por conteúdo `ExecStart` apontando ao app,
+wrappers `pi-manager-*`, sudoers, nginx, env, dados), lista, **pede confirmação**
+e faz **purge total**. NUNCA remover diretórios cegamente por nome (apagaria o
+próprio repo). Novo artefato criado pela instalação → adicione à detecção.
+
 ### C7 — `install.sh` gera o service; o `systemd/*.service` é referência
 O instalador escreve seu próprio unit file. Se editar um, reflita no outro
 (ExecStart, EnvironmentFile, ReadWritePaths) para não divergirem.

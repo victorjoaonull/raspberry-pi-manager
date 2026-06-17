@@ -118,6 +118,17 @@ else
     pass "webhook/PUSH removido — apenas modelo PULL semanal"
 fi
 
+# --- C10: install.sh detecta/remove versões antigas --------------------------
+echo "[C10] Remoção de versões antigas"
+grep -q 'detect_and_purge_old' "$INSTALL" \
+    && pass "install.sh tem detect_and_purge_old (detecção/purge de versões antigas)" \
+    || fail "install.sh NÃO remove versões antigas (risco de conflito de serviços)"
+if grep -q 'iname "\*pi-manager\*".*rm -rf\|rm -rf "\$d" || true' "$INSTALL"; then
+    fail "install.sh ainda tem remoção cega de diretórios *pi-manager* (apagaria o repo)"
+else
+    pass "sem remoção cega de diretórios (não apaga o próprio repo)"
+fi
+
 # --- C8: README presente e com seções mínimas --------------------------------
 echo "[C8] README coerente"
 [ -f "$README" ] && pass "README.md existe" || fail "README.md ausente"

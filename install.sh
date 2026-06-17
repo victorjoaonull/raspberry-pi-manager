@@ -45,28 +45,9 @@ if ! id "administrador" &>/dev/null; then
 fi
 
 # ========== LIMPAR INSTALAÇÕES ANTIGAS ==========
-echo -e "${BLUE}[--]${NC} Removendo possíveis instalações antigas que contenham 'pi-manager' no nome..."
-SEARCH_PATHS=("/home" "/opt" "/usr/local" "/srv" "/var/www" "/root" "/tmp")
-FOUND=()
-for p in "${SEARCH_PATHS[@]}"; do
-    if [ -d "$p" ]; then
-        while IFS= read -r -d $'\0' d; do
-            FOUND+=("$d")
-        done < <(find "$p" -maxdepth 3 -type d -iname "*pi-manager*" -print0 2>/dev/null || true)
-    fi
-done
-if [ ${#FOUND[@]} -gt 0 ]; then
-    echo "Encontrado diretórios para remoção:" 
-    for d in "${FOUND[@]}"; do
-        echo "  - $d"
-    done
-    echo "Removendo..."
-    for d in "${FOUND[@]}"; do
-        rm -rf "$d" || true
-    done
-else
-    echo "Nenhuma instalação antiga encontrada."
-fi
+# A detecção e remoção (purge total, com confirmação) das versões antigas é feita
+# por detect_and_purge_old(), definida e chamada logo após as variáveis abaixo
+# (precisa de INSTALL_DIR / SERVICE_NAME / REPO_DIR já definidos).
 
 # ========== VARIÁVEIS DE CONFIGURAÇÃO ==========
 # Permite sobrescrever o diretório de instalação via variável de ambiente
@@ -78,6 +59,125 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GIT_REPO="${GIT_REPO:-https://github.com/victorjoaonull/raspberry-pi-manager.git}"
 # Se desejar clonar do GitHub, exporte CLONE_FROM_GITHUB=true antes de rodar
 CLONE_FROM_GITHUB="${CLONE_FROM_GITHUB:-false}"
+
+# ========== DETECÇÃO E REMOÇÃO DE VERSÕES ANTIGAS (PURGE) ==========
+# Detecta artefatos de QUALQUER versão anterior (o nome do serviço/wrappers já
+# mudou ao longo do tempo) via detecção DINÂMICA — por nome e por conteúdo que
+# aponte ao app — e, após confirmação, faz um PURGE TOTAL antes de instalar do
+# zero. Para automação (sem prompt), exporte PI_MANAGER_PURGE=yes.
+detect_and_purge_old() {
+    echo -e "${BLUE}[--]${NC} Procurando instalações anteriores..."
+
+    local units=() files=() dirs=() found=()
+    local u f d p name
+
+    # 1) Units systemd: por NOME (*pi-manager*) e por CONTEÚDO (ExecStart do app)
+    shopt -s nullglob
+    for u in /etc/systemd/system/*pi-manager*.service /etc/systemd/system/*pi-manager*.timer; do
+        units+=("$u")
+    done
+    while IFS= read -r u; do
+        [ -n "$u" ] && units+=("$u")
+    done < <(grep -rlE "/src/app\.py|/usr/local/bin/update_app\.sh|Gerenciador.*Raspberry" /etc/systemd/system/*.service 2>/dev/null || true)
+    shopt -u nullglob
+    if [ ${#units[@]} -gt 0 ]; then
+        mapfile -t units < <(printf '%s\n' "${units[@]}" | sort -u)
+        for u in "${units[@]}"; do found+=("unit: $(basename "$u")"); done
+    fi
+
+    # 2) Wrappers / scripts em /usr/local/bin
+    shopt -s nullglob
+    for f in /usr/local/bin/pi-manager-* /usr/local/bin/update_app.sh; do
+        files+=("$f"); found+=("bin: $f")
+    done
+    shopt -u nullglob
+
+    # 3) sudoers
+    for f in /etc/sudoers.d/pi-manager /etc/sudoers.d/pi-manager.bak; do
+        [ -e "$f" ] && { files+=("$f"); found+=("sudoers: $f"); }
+    done
+
+    # 4) nginx (nomes usados pelas versões)
+    for f in /etc/nginx/sites-enabled/raspberry-pi-manager /etc/nginx/sites-available/raspberry-pi-manager \
+             /etc/nginx/sites-enabled/pi-manager /etc/nginx/sites-available/pi-manager; do
+        [ -e "$f" ] && { files+=("$f"); found+=("nginx: $f"); }
+    done
+
+    # 5) atalhos / autostart do kiosk
+    for f in /home/administrador/.config/autostart/Chromium-Raspberry.desktop \
+             /home/administrador/Desktop/Chromium-Raspberry.desktop; do
+        [ -e "$f" ] && { files+=("$f"); found+=("atalho: $f"); }
+    done
+
+    # 6) env file
+    if [ -e "/etc/default/${SERVICE_NAME}" ]; then
+        files+=("/etc/default/${SERVICE_NAME}"); found+=("env: /etc/default/${SERVICE_NAME}")
+    fi
+
+    # 7) PURGE de dados do usuário (URLs, logs, perfil/favoritos, secret_key)
+    for d in "$INSTALL_DIR/config" "$INSTALL_DIR/logs" \
+             /home/administrador/chromium-profile \
+             /home/administrador/.config/raspberry-pi-manager; do
+        [ -e "$d" ] && { dirs+=("$d"); found+=("dados: $d"); }
+    done
+
+    # 8) Diretórios de instalações DUPLICADAS (nunca a fonte atual)
+    while IFS= read -r -d $'\0' d; do
+        if [ "$(realpath "$d")" != "$(realpath "$REPO_DIR")" ] && \
+           [ "$(realpath "$d")" != "$(realpath "$INSTALL_DIR")" ]; then
+            dirs+=("$d"); found+=("dir duplicado: $d")
+        fi
+    done < <(find /home /opt /srv /var/www /root /tmp -maxdepth 3 -type d -iname "*pi-manager*" -print0 2>/dev/null || true)
+
+    if [ ${#found[@]} -eq 0 ]; then
+        echo "  Nenhuma instalação anterior encontrada."
+        return 0
+    fi
+
+    echo -e "${YELLOW}⚠️  Instalações/artefatos antigos encontrados:${NC}"
+    for d in "${found[@]}"; do echo "   - $d"; done
+    echo ""
+
+    # Confirmação (pulada se PI_MANAGER_PURGE=yes)
+    local resp="${PI_MANAGER_PURGE:-}"
+    if [ "$resp" = "yes" ]; then
+        resp="s"
+    elif [ -t 0 ]; then
+        read -r -p "Remover TUDO isso (PURGE TOTAL — inclui config, senha e favoritos) e prosseguir? (s/N): " resp
+    else
+        echo -e "${RED}❌ Sem terminal interativo. Para remover automaticamente, rode com PI_MANAGER_PURGE=yes${NC}"
+        exit 1
+    fi
+    case "$resp" in
+        [sSyY]*) ;;
+        *) echo -e "${RED}Remoção cancelada — instalação abortada para não conflitar com a versão antiga.${NC}"; exit 1;;
+    esac
+
+    echo -e "${BLUE}🧹 Removendo versões antigas (purge total)...${NC}"
+    # Encerra processos do app em execução (por PID; padrão não casa este script)
+    for p in $(ps -eo pid,cmd | grep -F '/src/app.py' | grep -v grep | awk '{print $1}'); do
+        kill -9 "$p" 2>/dev/null || true
+    done
+    # Units: parar, desabilitar, remover
+    for u in "${units[@]}"; do
+        name="$(basename "$u")"
+        systemctl stop "$name" 2>/dev/null || true
+        systemctl disable "$name" 2>/dev/null || true
+        rm -f "$u"
+    done
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl reset-failed 2>/dev/null || true
+    # Arquivos e diretórios
+    for f in "${files[@]}"; do rm -f "$f" 2>/dev/null || true; done
+    for d in "${dirs[@]}"; do rm -rf "$d" 2>/dev/null || true; done
+    # nginx: recarrega se a config seguir válida
+    if command -v nginx >/dev/null 2>&1; then
+        nginx -t >/dev/null 2>&1 && systemctl reload nginx 2>/dev/null || true
+    fi
+    echo -e "${GREEN}✅ Versões antigas removidas. Prosseguindo com instalação limpa.${NC}"
+}
+
+detect_and_purge_old
 
 # ========== ATUALIZAR SISTEMA ==========
 echo -e "${BLUE}[2/12]${NC} Atualizando sistema..."

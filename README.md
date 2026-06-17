@@ -46,7 +46,7 @@ sudo ./install.sh
 ```
 
 O script irá:
-- ✅ Remover instalações antigas
+- ✅ **Detectar e remover versões antigas** (serviços, wrappers, sudoers, nginx, dados) — ver abaixo
 - ✅ Criar usuário `administrador` (se não existir)
 - ✅ Instalar dependências do sistema
 - ✅ Configurar ambiente Python com venv
@@ -54,6 +54,27 @@ O script irá:
 - ✅ Configurar auto-login gráfico
 - ✅ Instalar e configurar Chromium
 - ✅ Criar script de atualização automática
+
+#### Remoção de versões antigas (purge)
+
+Antes de instalar, o script **detecta automaticamente** instalações anteriores —
+de **qualquer versão** (os nomes de serviço/wrappers já mudaram ao longo do tempo),
+via detecção dinâmica por nome e por conteúdo. Ele **lista** o que encontrou e
+**pede confirmação** antes de fazer um **purge total**:
+
+```
+⚠️  Instalações/artefatos antigos encontrados:
+   - unit: pi-manager.service
+   - bin: /usr/local/bin/pi-manager-power
+   - sudoers: /etc/sudoers.d/pi-manager
+   - dados: /home/administrador/chromium-profile
+Remover TUDO isso (PURGE TOTAL — inclui config, senha e favoritos) e prosseguir? (s/N):
+```
+
+> ⚠️ O purge remove também os **dados do usuário** (URLs do autostart, senha em
+> `/etc/default`, favoritos do Chromium). Para rodar **sem prompt** (automação),
+> use `sudo PI_MANAGER_PURGE=yes ./install.sh`. Se você responder "não", a
+> instalação é abortada para não conflitar com a versão antiga.
 
 ### 4. Acesse a aplicação
 
